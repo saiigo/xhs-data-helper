@@ -11,10 +11,6 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 # asarUnpack not needed - Python runtime is in extraResources
 extraResources:
-  # Python runtime (platform-specific)
-  - from: "resources/python/${os}-${arch}/python"
-    to: "python"
-    filter: ["**/*"]
   # Python scripts
   - from: "python-engine"
     to: "python-engine"
@@ -24,6 +20,11 @@ extraResources:
     to: "python-packages"
     filter: ["**/*", "!__pycache__", "!*.pyc"]
 win:
+  extraResources:
+    # Python runtime (Windows)
+    - from: "resources/python/win32-x64/python"
+      to: "python"
+      filter: ["**/*"]
   executableName: XHSHelper
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
@@ -31,6 +32,11 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  extraResources:
+    # Python runtime (macOS - will use correct arch automatically)
+    - from: "resources/python/darwin-${arch}/python"
+      to: "python"
+      filter: ["**/*"]
   entitlementsInherit: resources/build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -41,6 +47,11 @@ mac:
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
+  extraResources:
+    # Python runtime (Linux - will use correct arch automatically)
+    - from: "resources/python/linux-${arch}/python"
+      to: "python"
+      filter: ["**/*"]
   target:
     - AppImage
     - snap
