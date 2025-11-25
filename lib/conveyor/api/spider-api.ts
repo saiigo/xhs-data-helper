@@ -5,7 +5,7 @@ export interface Task {
   id: number
   task_type: string
   params: string
-  status: 'running' | 'completed' | 'failed' | 'stopped'
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'warning'
   started_at: number
   completed_at: number | null
   error_message: string | null
@@ -93,6 +93,17 @@ export class SpiderApi {
       'spider:message',
       (_event, message: PythonMessage) => {
         callback(message)
+      }
+    )
+    return unsubscribe
+  }
+
+  // Listen to cookie invalid events
+  onCookieInvalid = (callback: (data: { message: string }) => void): (() => void) => {
+    const unsubscribe = this.electronAPI.ipcRenderer.on(
+      'cookie:invalid',
+      (_event, data: { message: string }) => {
+        callback(data)
       }
     )
     return unsubscribe

@@ -8,9 +8,10 @@ import * as fs from 'fs'
 import appIcon from '@/resources/build/icon.png?asset'
 
 export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
-  // Set main window for queue manager
+  // Set main window for queue manager and python bridge
   if (mainWindow) {
     queueManager.setMainWindow(mainWindow)
+    pythonBridge.setMainWindow(mainWindow)
   }
 
   // Config management

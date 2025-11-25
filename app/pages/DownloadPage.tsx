@@ -1,19 +1,5 @@
 import { useState } from 'react'
-import {
-  PlayCircle,
-  Loader2,
-  FileText,
-  User,
-  Search,
-  Save,
-  Settings2,
-  Image,
-  Video,
-  FileSpreadsheet,
-  Sparkles,
-  ListPlus,
-  Activity,
-} from 'lucide-react'
+import { Download, FileText, User, Search, Loader2, Sparkles, Save, FileSpreadsheet, Image, Video } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
@@ -29,14 +15,13 @@ import { Badge } from '../components/ui/badge'
 type TaskType = 'notes' | 'user' | 'search'
 type SaveMode = 'excel' | 'media' | 'all'
 
-interface TaskConfigPageProps {
-  isRunning: boolean
-  currentProgress: { current: number; total: number }
-  currentTask: string
+interface DownloadPageProps {
+  onDownloadStarted?: () => void
 }
 
-export default function TaskConfigPage({ isRunning, currentProgress, currentTask }: TaskConfigPageProps) {
+export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = {}) {
   const [taskType, setTaskType] = useState<TaskType>('search')
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Notes task state
   const [noteUrls, setNoteUrls] = useState('')
@@ -57,82 +42,8 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
   const [saveVideo, setSaveVideo] = useState(true)
   const [saveImage, setSaveImage] = useState(true)
 
-  const handleStartTask = async () => {
-    try {
-      const config = await window.conveyor.spider.getConfig()
-
-      if (!config.cookie) {
-        toast.error('请先在设置页面配置Cookie!')
-        return
-      }
-
-      let params: any = {}
-
-      if (taskType === 'notes') {
-        const urls = noteUrls
-          .split('\n')
-          .map((url) => url.trim())
-          .filter((url) => url)
-
-        if (urls.length === 0) {
-          toast.error('请输入至少一个笔记URL!')
-          return
-        }
-        params = { notes: urls }
-      } else if (taskType === 'user') {
-        if (!userUrl.trim()) {
-          toast.error('请输入用户主页URL!')
-          return
-        }
-        params = { userUrl: userUrl.trim() }
-      } else if (taskType === 'search') {
-        if (!searchQuery.trim()) {
-          toast.error('请输入搜索关键词!')
-          return
-        }
-        params = {
-          query: searchQuery.trim(),
-          requireNum: searchCount,
-          sortType: parseInt(sortType),
-          noteType: parseInt(noteType),
-          noteTime: parseInt(timeRange),
-          noteRange: 0,
-          posDistance: 0,
-        }
-      }
-
-      const mediaTypes: ('video' | 'image')[] = []
-      if (saveVideo) mediaTypes.push('video')
-      if (saveImage) mediaTypes.push('image')
-
-      const saveOptions = {
-        mode: saveMode,
-        excelName: excelName || (taskType === 'search' ? searchQuery : '数据'),
-        mediaTypes,
-      }
-
-      const result = await window.conveyor.spider.startTask({
-        cookie: config.cookie,
-        taskType,
-        params,
-        saveOptions,
-        paths: config.paths,
-        proxy: config.proxy.enabled ? config.proxy.url : undefined,
-      })
-
-      if (result.success) {
-        toast.success('任务已启动！正在下载中...')
-      } else {
-        toast.error('启动失败: ' + result.error)
-        return
-      }
-    } catch (error) {
-      console.error('Failed to start task:', error)
-      toast.error('启动失败: ' + error)
-    }
-  }
-
-  const handleAddToQueue = async () => {
+  const handleDownload = async () => {
+    setIsSubmitting(true)
     try {
       const config = await window.conveyor.spider.getConfig()
 
@@ -195,61 +106,56 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
         }
       }
 
-      const result = await window.conveyor.spider.addToQueue(taskConfig)
-
-      if (result.success) {
-        toast.success('已添加到列表！切换到"任务列表"页面统一管理')
-      } else {
+      // Add to queue
+      const addResult = await window.conveyor.spider.addToQueue(taskConfig)
+      if (!addResult.success) {
         toast.error('添加失败')
+        return
       }
+
+      // Start queue (idempotent - safe to call even if already running)
+      const startResult = await window.conveyor.spider.startQueue()
+
+      if (startResult.success) {
+        toast.success('已开始下载')
+        onDownloadStarted?.()
+      } else {
+        // Queue added but didn't start - might already be running
+        toast.success('已加入下载队列')
+        onDownloadStarted?.()
+      }
+
     } catch (error) {
-      console.error('Failed to add to queue:', error)
-      toast.error('添加失败: ' + error)
+      console.error('Failed to start download:', error)
+      toast.error('下载失败: ' + error)
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
-  const containerVariants: any = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.05,
-      },
-    },
-  }
-
-  const itemVariants: any = {
-    hidden: { y: 10, opacity: 0 },
-    visible: {
-      y: 0,
-      opacity: 1,
-      transition: {
-        type: 'spring',
-        stiffness: 100,
-        damping: 15,
-        duration: 0.15,
-      },
-    },
-  }
-
   return (
-    <motion.div className="space-y-6 pb-12" variants={containerVariants} initial="hidden" animate="visible">
+    <motion.div
+      className="space-y-6 pb-12"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
+    >
       {/* Header */}
-      <motion.div variants={itemVariants}>
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">任务配置</h1>
-        <p className="text-muted-foreground mt-2 text-lg">创建并配置新的数据采集任务</p>
-      </motion.div>
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">下载数据</h1>
+        <p className="text-muted-foreground mt-2 text-lg">选择数据源并开始下载</p>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column: Task Configuration */}
-        <motion.div className="lg:col-span-2 space-y-6" variants={itemVariants}>
+        {/* Left Column: Input Form */}
+        <div className="lg:col-span-2 space-y-6">
           <Card className="border-border bg-card shadow-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-primary" />
-                选择任务类型
+                选择数据源
               </CardTitle>
-              <CardDescription>根据不同的数据源选择对应的爬取方式</CardDescription>
+              <CardDescription>根据不同的数据源选择对应的方式</CardDescription>
             </CardHeader>
             <CardContent>
               <Tabs value={taskType} onValueChange={(v) => setTaskType(v as TaskType)} className="w-full">
@@ -259,14 +165,14 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
                     className="gap-2 data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-sm transition-all duration-300"
                   >
                     <FileText className="w-4 h-4" />
-                    指定笔记
+                    笔记链接
                   </TabsTrigger>
                   <TabsTrigger
                     value="user"
                     className="gap-2 data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-sm transition-all duration-300"
                   >
                     <User className="w-4 h-4" />
-                    用户笔记
+                    博主主页
                   </TabsTrigger>
                   <TabsTrigger
                     value="search"
@@ -281,11 +187,11 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
                   {/* Notes Task */}
                   <TabsContent value="notes" className="space-y-4 mt-0">
                     <div className="space-y-3">
-                      <Label className="text-base">笔记 URL 列表</Label>
+                      <Label className="text-base">笔记链接列表</Label>
                       <Textarea
                         value={noteUrls}
                         onChange={(e) => setNoteUrls(e.target.value)}
-                        placeholder="https://www.xiaohongshu.com/explore/xxxxx?xsec_token=..."
+                        placeholder="https://www.xiaohongshu.com/explore/xxxxx&#10;每行一个链接"
                         className="min-h-[250px] font-mono text-sm bg-secondary/20 border-border/50 focus:border-primary/50 transition-colors resize-none p-4"
                       />
                       <p className="text-xs text-muted-foreground flex items-center gap-2">
@@ -298,7 +204,7 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
                   {/* User Task */}
                   <TabsContent value="user" className="space-y-4 mt-0">
                     <div className="space-y-3">
-                      <Label className="text-base">用户主页 URL</Label>
+                      <Label className="text-base">博主主页链接</Label>
                       <div className="relative">
                         <div className="absolute left-3 top-3 text-muted-foreground">
                           <User className="w-4 h-4" />
@@ -306,13 +212,13 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
                         <Input
                           value={userUrl}
                           onChange={(e) => setUserUrl(e.target.value)}
-                          placeholder="https://www.xiaohongshu.com/user/profile/xxxxx?xsec_token=..."
+                          placeholder="https://www.xiaohongshu.com/user/profile/xxxxx"
                           className="pl-10 h-12 bg-secondary/20 border-border/50 focus:border-primary/50 transition-colors"
                         />
                       </div>
                       <p className="text-xs text-muted-foreground flex items-center gap-2">
                         <span className="w-1.5 h-1.5 rounded-full bg-primary/50" />
-                        将爬取该用户的所有公开笔记
+                        将下载该博主的所有公开笔记
                       </p>
                     </div>
                   </TabsContent>
@@ -337,7 +243,7 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
                     <div className="p-6 rounded-xl bg-secondary/10 border border-border/50 space-y-6">
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <Label>爬取数量</Label>
+                          <Label>下载数量</Label>
                           <Badge
                             variant="secondary"
                             className="bg-primary/10 text-primary hover:bg-primary/20 transition-colors px-3 py-1 text-sm"
@@ -419,49 +325,14 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
               </Tabs>
             </CardContent>
           </Card>
-        </motion.div>
+        </div>
 
-        {/* Right Column: Save Options & Actions */}
-        <motion.div className="space-y-6" variants={itemVariants}>
-          {/* Progress Card - only shown when running */}
-          {isRunning && currentProgress.total > 0 && (
-            <Card className="border-primary/50 bg-primary/5">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Activity className="w-4 h-4 animate-pulse text-primary" />
-                  下载中
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">
-                    {currentProgress.current} / {currentProgress.total}
-                  </span>
-                  <span className="font-bold text-primary">
-                    {Math.round((currentProgress.current / currentProgress.total) * 100)}%
-                  </span>
-                </div>
-                <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-primary"
-                    initial={{ width: 0 }}
-                    animate={{
-                      width: `${(currentProgress.current / currentProgress.total) * 100}%`,
-                    }}
-                    transition={{ type: 'spring', stiffness: 50 }}
-                  />
-                </div>
-                {currentTask && (
-                  <p className="text-xs text-muted-foreground truncate font-mono">{currentTask}</p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          <Card className="border-border/50 bg-card shadow-xl h-fit">
+        {/* Right Column: Save Options */}
+        <div className="space-y-6">
+          <Card className="border-border/50 bg-card shadow-xl">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Settings2 className="w-5 h-5 text-primary" />
+                <Save className="w-5 h-5 text-primary" />
                 <div>
                   <CardTitle>保存选项</CardTitle>
                   <CardDescription>配置数据保存格式</CardDescription>
@@ -584,48 +455,33 @@ export default function TaskConfigPage({ isRunning, currentProgress, currentTask
             </CardContent>
           </Card>
 
-          {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-3">
-            {/* Add to Queue Button */}
-            <Button
-              onClick={handleAddToQueue}
-              disabled={isRunning}
-              size="lg"
-              variant="outline"
-              className="h-12 text-base font-medium transition-all duration-300"
-            >
-              <ListPlus className="w-5 h-5 mr-2" />
-              添加到列表
-            </Button>
+          {/* Download Button */}
+          <Button
+            onClick={handleDownload}
+            disabled={isSubmitting}
+            size="lg"
+            className="w-full h-14 text-base font-medium transition-all duration-300 bg-primary hover:bg-primary/90 shadow-lg hover:shadow-xl hover:scale-[1.02]"
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                处理中...
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5 mr-2" />
+                开始下载
+              </>
+            )}
+          </Button>
 
-            {/* Start Button */}
-            <Button
-              onClick={handleStartTask}
-              disabled={isRunning}
-              size="lg"
-              className={`
-                h-12 text-base font-medium transition-all duration-300
-                ${
-                  isRunning
-                    ? 'bg-secondary text-muted-foreground cursor-not-allowed'
-                    : 'bg-primary hover:bg-primary/90 shadow-sm hover:scale-[1.01]'
-                }
-              `}
-            >
-              {isRunning ? (
-                <>
-                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  下载中...
-                </>
-              ) : (
-                <>
-                  <PlayCircle className="w-5 h-5 mr-2" />
-                  立即下载
-                </>
-              )}
-            </Button>
+          {/* Hint */}
+          <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20">
+            <p className="text-xs text-blue-600 dark:text-blue-400">
+              💡 下载会自动排队，可以继续添加更多
+            </p>
           </div>
-        </motion.div>
+        </div>
       </div>
     </motion.div>
   )

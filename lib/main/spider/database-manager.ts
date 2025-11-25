@@ -11,7 +11,7 @@ export interface Task {
   id: number
   task_type: string
   params: string // JSON
-  status: 'running' | 'completed' | 'failed' | 'stopped'
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'warning'
   started_at: number
   completed_at: number | null
   error_message: string | null

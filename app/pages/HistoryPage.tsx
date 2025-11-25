@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
-import { History, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, CheckCircle, XCircle, Clock, Search, FolderOpen } from 'lucide-react'
+import { History, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, CheckCircle, XCircle, Clock, Search, FolderOpen, AlertTriangle, Activity, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Input } from '../components/ui/input'
+import { Progress } from '../components/ui/progress'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 import { toast } from 'sonner'
 import {
@@ -18,6 +19,7 @@ import {
   AlertDialogTitle,
 } from '../components/ui/alert-dialog'
 import type { Task, Log } from '../../lib/conveyor/api/spider-api'
+import type { QueueItem } from '../../lib/conveyor/schemas/spider-schema'
 
 interface ExcelPreviewData {
   data: any[][]
@@ -35,19 +37,70 @@ export default function HistoryPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<number | null>(null)
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize] = useState(10)
+
+  // Queue state
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([])
+  const [currentProgress, setCurrentProgress] = useState({ current: 0, total: 0 })
+  const [currentTask, setCurrentTask] = useState('')
+
   useEffect(() => {
     loadTasks()
+    loadQueue()
+
+    // Listen to queue status updates
+    const unsubscribeQueue = window.conveyor.spider.onQueueStatus(() => {
+      loadQueue()
+      loadTasks() // Refresh tasks when queue updates
+    })
+
+    // Listen to spider messages for progress updates
+    const unsubscribeMessage = window.conveyor.spider.onMessage((message) => {
+      if (message.type === 'progress') {
+        setCurrentProgress({
+          current: message.current || 0,
+          total: message.total || 0,
+        })
+        setCurrentTask(message.title || message.message || '')
+      } else if (message.type === 'done' || message.type === 'error') {
+        setCurrentProgress({ current: 0, total: 0 })
+        setCurrentTask('')
+        loadTasks() // Refresh tasks when complete
+      }
+    })
+
+    // Refresh every 5 seconds
+    const interval = setInterval(() => {
+      loadQueue()
+      loadTasks()
+    }, 5000)
+
+    return () => {
+      unsubscribeQueue()
+      unsubscribeMessage()
+      clearInterval(interval)
+    }
   }, [])
 
   const loadTasks = async () => {
     try {
-      setLoading(true)
       const recentTasks = await window.conveyor.spider.getRecentTasks(100)
       setTasks(recentTasks)
     } catch (error) {
       console.error('Failed to load tasks:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadQueue = async () => {
+    try {
+      const items = await window.conveyor.spider.getQueueItems()
+      setQueueItems(items)
+    } catch (error) {
+      console.error('Failed to load queue:', error)
     }
   }
 
@@ -162,6 +215,8 @@ export default function HistoryPage() {
     switch (status) {
       case 'completed':
         return <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20"><CheckCircle className="w-3 h-3 mr-1" />完成</Badge>
+      case 'warning':
+        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20"><AlertTriangle className="w-3 h-3 mr-1" />警告</Badge>
       case 'failed':
         return <Badge variant="destructive"><XCircle className="w-3 h-3 mr-1" />失败</Badge>
       case 'running':
@@ -191,12 +246,74 @@ export default function HistoryPage() {
     })
   }
 
+  const getQueueTaskDescription = (taskConfig: string) => {
+    try {
+      const config = JSON.parse(taskConfig)
+      if (config.taskType === 'notes') {
+        return `${config.params.notes?.length || 0} 个笔记`
+      } else if (config.taskType === 'user') {
+        const url = config.params.userUrl || ''
+        const userId = url.split('/').pop()?.split('?')[0] || '用户'
+        return `博主: ${userId}`
+      } else if (config.taskType === 'search') {
+        return `关键词: ${config.params.query || '搜索'}`
+      }
+      return '-'
+    } catch {
+      return '-'
+    }
+  }
+
+  const handleRemoveFromQueue = async (queueId: number) => {
+    try {
+      const result = await window.conveyor.spider.removeFromQueue(queueId)
+      if (result.success) {
+        toast.success('已移除')
+        loadQueue()
+      } else {
+        toast.error(result.message || '移除失败')
+      }
+    } catch (error) {
+      console.error('Failed to remove from queue:', error)
+      toast.error('移除失败')
+    }
+  }
+
+  const handleRetryQueue = async (item: QueueItem) => {
+    try {
+      await window.conveyor.spider.removeFromQueue(item.id)
+      const taskConfig = JSON.parse(item.task_config)
+      await window.conveyor.spider.addToQueue(taskConfig)
+      await window.conveyor.spider.startQueue()
+      toast.success('已重新加入下载队列')
+      loadQueue()
+    } catch (error) {
+      console.error('Failed to retry:', error)
+      toast.error('重试失败')
+    }
+  }
+
   const filteredTasks = tasks.filter(task => {
     if (!searchTerm) return true
     const params = JSON.parse(task.params)
     const searchText = `${task.task_type} ${params.query || ''} ${params.userUrl || ''}`.toLowerCase()
     return searchText.includes(searchTerm.toLowerCase())
   })
+
+  const runningItems = queueItems.filter(item => item.status === 'running')
+  const pendingItems = queueItems.filter(item => item.status === 'pending')
+  const failedQueueItems = queueItems.filter(item => item.status === 'failed')
+
+  // Pagination
+  const totalPages = Math.ceil(filteredTasks.length / pageSize)
+  const startIndex = (currentPage - 1) * pageSize
+  const endIndex = startIndex + pageSize
+  const paginatedTasks = filteredTasks.slice(startIndex, endIndex)
+
+  // Reset to page 1 when search changes
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm])
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -221,8 +338,122 @@ export default function HistoryPage() {
       {/* Header */}
       <motion.div variants={itemVariants}>
         <h1 className="text-3xl font-bold tracking-tight text-foreground">历史记录</h1>
-        <p className="text-muted-foreground mt-2 text-lg">查看历史任务执行记录和结果</p>
+        <p className="text-muted-foreground mt-2 text-lg">查看下载状态和历史记录</p>
       </motion.div>
+
+      {/* Queue Status - Running & Pending */}
+      {(runningItems.length > 0 || pendingItems.length > 0 || failedQueueItems.length > 0) && (
+        <motion.div variants={itemVariants} className="space-y-4">
+          {/* Running */}
+          {runningItems.length > 0 && (
+            <Card className="border-primary/50 bg-primary/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Activity className="w-5 h-5 animate-pulse text-primary" />
+                  正在下载
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {runningItems.map((item) => (
+                  <div key={item.id} className="p-4 rounded-lg bg-background border border-primary/20">
+                    <div className="mb-3">
+                      <span className="font-medium text-foreground">{getQueueTaskDescription(item.task_config)}</span>
+                      {currentTask && (
+                        <p className="text-xs text-muted-foreground truncate mt-1">{currentTask}</p>
+                      )}
+                    </div>
+                    {currentProgress.total > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            {currentProgress.current} / {currentProgress.total}
+                          </span>
+                          <span className="font-bold text-primary">
+                            {Math.round((currentProgress.current / currentProgress.total) * 100)}%
+                          </span>
+                        </div>
+                        <Progress value={(currentProgress.current / currentProgress.total) * 100} className="h-2" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Pending */}
+          {pendingItems.length > 0 && (
+            <Card className="border-yellow-500/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-yellow-500" />
+                  等待中 ({pendingItems.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {pendingItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border/50 hover:bg-secondary/50 transition-colors"
+                  >
+                    <span className="text-sm text-foreground truncate flex-1">
+                      {getQueueTaskDescription(item.task_config)}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleRemoveFromQueue(item.id)}
+                      className="flex-shrink-0 hover:text-red-500"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Failed Queue Items */}
+          {failedQueueItems.length > 0 && (
+            <Card className="border-red-500/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <XCircle className="w-5 h-5 text-red-500" />
+                  下载失败 ({failedQueueItems.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {failedQueueItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 rounded-lg bg-red-500/5 border border-red-500/20"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-foreground mb-1">
+                          {getQueueTaskDescription(item.task_config)}
+                        </div>
+                        {item.error_message && (
+                          <p className="text-xs text-red-500">{item.error_message}</p>
+                        )}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleRetryQueue(item)}
+                        className="flex-shrink-0 ml-2 border-red-500/30 hover:bg-red-500/10"
+                      >
+                        <RefreshCw className="w-3 h-3 mr-1" />
+                        重试
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </motion.div>
+      )}
 
       {/* Search */}
       <motion.div variants={itemVariants}>
@@ -247,8 +478,11 @@ export default function HistoryPage() {
                   <History className="w-5 h-5 text-primary" />
                 </div>
                 <div>
-                  <CardTitle>任务列表</CardTitle>
-                  <CardDescription>共 {filteredTasks.length} 条记录</CardDescription>
+                  <CardTitle>历史任务</CardTitle>
+                  <CardDescription>
+                    共 {filteredTasks.length} 条记录
+                    {totalPages > 1 && ` · 第 ${currentPage}/${totalPages} 页`}
+                  </CardDescription>
                 </div>
               </div>
             </div>
@@ -256,13 +490,14 @@ export default function HistoryPage() {
           <CardContent>
             {loading ? (
               <div className="text-center py-8 text-muted-foreground">加载中...</div>
-            ) : filteredTasks.length === 0 ? (
+            ) : paginatedTasks.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 {searchTerm ? '未找到匹配的任务' : '暂无历史记录'}
               </div>
             ) : (
-              <div className="space-y-3">
-                {filteredTasks.map((task) => {
+              <>
+                <div className="space-y-3">
+                  {paginatedTasks.map((task) => {
                   const params = JSON.parse(task.params)
                   const isExpanded = expandedTaskId === task.id
 
@@ -418,6 +653,61 @@ export default function HistoryPage() {
                   )
                 })}
               </div>
+
+              {/* Pagination Controls */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-6 pt-4 border-t border-border">
+                  <div className="text-sm text-muted-foreground">
+                    显示第 {startIndex + 1}-{Math.min(endIndex, filteredTasks.length)} 条，共 {filteredTasks.length} 条
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      disabled={currentPage === 1}
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1" />
+                      上一页
+                    </Button>
+                    <div className="flex items-center gap-1">
+                      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                        let pageNum: number
+                        if (totalPages <= 5) {
+                          pageNum = i + 1
+                        } else if (currentPage <= 3) {
+                          pageNum = i + 1
+                        } else if (currentPage >= totalPages - 2) {
+                          pageNum = totalPages - 4 + i
+                        } else {
+                          pageNum = currentPage - 2 + i
+                        }
+                        return (
+                          <Button
+                            key={pageNum}
+                            variant={currentPage === pageNum ? 'default' : 'outline'}
+                            size="sm"
+                            onClick={() => setCurrentPage(pageNum)}
+                            className="w-8 h-8 p-0"
+                          >
+                            {pageNum}
+                          </Button>
+                        )
+                      })}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                      disabled={currentPage === totalPages}
+                    >
+                      下一页
+                      <ChevronRight className="w-4 h-4 ml-1" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
             )}
           </CardContent>
         </Card>

@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Settings, PlayCircle, Zap, History, Loader2, RefreshCw, Download, CheckCircle2, ListOrdered } from 'lucide-react'
+import { Settings, Zap, History, Loader2, RefreshCw, Download as DownloadIcon, CheckCircle2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import SettingsPage from './pages/SettingsPage'
-import TaskConfigPage from './pages/TaskConfigPage'
+import DownloadPage from './pages/DownloadPage'
 import HistoryPage from './pages/HistoryPage'
-import QueuePage from './pages/QueuePage'
 import { Badge } from './components/ui/badge'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
@@ -13,7 +12,7 @@ import type { Log, Task } from '@/lib/conveyor/api/spider-api'
 import type { PythonMessage } from '@/lib/conveyor/schemas/spider-schema'
 import './styles/app.css'
 
-type Page = 'task' | 'queue' | 'history' | 'settings'
+type Page = 'download' | 'history' | 'settings'
 type CookieStatus = 'valid' | 'invalid' | 'unknown' | 'checking'
 
 // LogEntry for UI display (formatted timestamp)
@@ -34,7 +33,7 @@ interface TaskState {
 }
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('task')
+  const [currentPage, setCurrentPage] = useState<Page>('download')
   const [cookieStatus, setCookieStatus] = useState<CookieStatus>('checking')
   const [appVersion, setAppVersion] = useState('')
   const [updateState, setUpdateState] = useState<UpdateState>({
@@ -181,7 +180,7 @@ export default function App() {
     loadUpdateStatus()
 
     // Subscribe to update status changes
-    const unsubscribe = window.conveyor.updater.onStatusChange((state) => {
+    const unsubscribeUpdate = window.conveyor.updater.onStatusChange((state) => {
       setUpdateState(state)
       if (state.status === 'available' && state.info) {
         toast.info(`发现新版本 ${state.info.version}`)
@@ -192,7 +191,22 @@ export default function App() {
       }
     })
 
-    return () => unsubscribe()
+    // Subscribe to cookie invalid events from main process
+    const unsubscribeCookie = window.conveyor.spider.onCookieInvalid((data: { message: string }) => {
+      setCookieStatus('invalid')
+      toast.error(data.message || 'Cookie已失效，请重新登录', {
+        duration: 5000,
+        action: {
+          label: '前往设置',
+          onClick: () => setCurrentPage('settings')
+        }
+      })
+    })
+
+    return () => {
+      unsubscribeUpdate()
+      unsubscribeCookie()
+    }
   }, [])
 
   const loadUpdateStatus = async () => {
@@ -235,28 +249,22 @@ export default function App() {
 
   const menuItems = [
     {
-      id: 'task' as Page,
+      id: 'download' as Page,
       label: '下载',
-      icon: PlayCircle,
-      description: '配置和下载数据',
-    },
-    {
-      id: 'queue' as Page,
-      label: '任务列表',
-      icon: ListOrdered,
-      description: '批量下载管理',
+      icon: DownloadIcon,
+      description: '新建下载任务',
     },
     {
       id: 'history' as Page,
       label: '历史',
       icon: History,
-      description: '查看历史记录',
+      description: '下载状态和记录',
     },
     {
       id: 'settings' as Page,
       label: '设置',
       icon: Settings,
-      description: 'Cookie 和路径配置',
+      description: 'Cookie 和配置',
     },
   ]
 
@@ -414,14 +422,7 @@ export default function App() {
                 className="min-h-full"
               >
                 {currentPage === 'settings' && <SettingsPage onCookieStatusChange={setCookieStatus} />}
-                {currentPage === 'task' && (
-                  <TaskConfigPage
-                    isRunning={taskState.isRunning}
-                    currentProgress={taskState.progress}
-                    currentTask={taskState.currentTask}
-                  />
-                )}
-                {currentPage === 'queue' && <QueuePage />}
+                {currentPage === 'download' && <DownloadPage onDownloadStarted={() => setCurrentPage('history')} />}
                 {currentPage === 'history' && <HistoryPage />}
               </motion.div>
             </AnimatePresence>

@@ -5,8 +5,9 @@
 import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
 import fs from 'fs'
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { databaseManager } from './database-manager'
+import { configManager } from './config-manager'
 
 export interface SpiderConfig {
   cookie: string
@@ -40,6 +41,8 @@ export interface PythonMessage {
   files?: string[]
   code?: string
   valid?: boolean
+  api_success?: boolean
+  api_message?: string
   userInfo?: {
     userId: string
     nickname: string
@@ -54,8 +57,50 @@ export class PythonBridge {
   private process: ChildProcess | null = null
   private messageHandler: MessageHandler | null = null
   private currentTaskId: number | null = null
+  private taskStatusSet: boolean = false // Track if status was set by done message
+  private mainWindow: BrowserWindow | null = null
 
   constructor() {}
+
+  /**
+   * Set main window reference for sending notifications
+   */
+  setMainWindow(window: BrowserWindow | null): void {
+    this.mainWindow = window
+  }
+
+  /**
+   * Validate cookie and notify renderer
+   */
+  private async validateCookieAndNotify(): Promise<void> {
+    try {
+      const cookie = configManager.getCookie()
+      if (!cookie) {
+        console.log('No cookie to validate')
+        return
+      }
+
+      console.log('Validating cookie due to account anomaly...')
+      const result = await this.validateCookie(cookie)
+
+      if (!result.valid) {
+        console.log('Cookie validation failed:', result.message)
+        // Update cookie validity in config
+        configManager.setCookie(cookie, 0) // Mark as expired
+
+        // Notify renderer process
+        if (this.mainWindow) {
+          this.mainWindow.webContents.send('cookie:invalid', {
+            message: result.message
+          })
+        }
+      } else {
+        console.log('Cookie is still valid')
+      }
+    } catch (error) {
+      console.error('Error validating cookie:', error)
+    }
+  }
 
   /**
    * Get Python executable path
@@ -115,6 +160,9 @@ export class PythonBridge {
 
     this.messageHandler = onMessage
 
+    // Reset status flag for new task
+    this.taskStatusSet = false
+
     // Create task record in database
     this.currentTaskId = databaseManager.createTask(config.taskType, config.params, {
       saveOptions: config.saveOptions,
@@ -145,6 +193,10 @@ export class PythonBridge {
     // Handle stdout (JSON Lines)
     this.process.stdout?.on('data', (data) => {
       const rawOutput = data.toString()
+
+      // Log all raw output to console for debugging
+      console.log('[Python stdout]:', rawOutput)
+
       const lines = rawOutput.split('\n')
       lines.forEach((line: string) => {
         if (line.trim()) {
@@ -154,11 +206,41 @@ export class PythonBridge {
             // Save to database
             if (this.currentTaskId) {
               databaseManager.addLog(this.currentTaskId, message)
+
+              // Handle done message to determine final status
+              if (message.type === 'done') {
+                const count = message.count || 0
+                const apiSuccess = message.api_success ?? true
+                const apiMessage = message.api_message || ''
+
+                // Determine task status based on result count and API response
+                let status: 'completed' | 'warning' | 'failed' = 'completed'
+                let errorMsg: string | undefined
+
+                // Check for account anomaly
+                if (!apiSuccess || apiMessage.includes('账号异常') || apiMessage.includes('检测到账号异常') || apiMessage.includes('code=-1')) {
+                  status = 'failed'
+                  errorMsg = apiMessage || '账号异常，请重新登录'
+
+                  // Trigger cookie validation
+                  this.validateCookieAndNotify().catch(err => {
+                    console.error('Failed to validate cookie:', err)
+                  })
+                } else if (count === 0) {
+                  // No data but no error - mark as warning
+                  status = 'warning'
+                  errorMsg = '任务完成但未获取到任何数据'
+                }
+
+                databaseManager.updateTask(this.currentTaskId, status, errorMsg, count)
+                this.taskStatusSet = true // Mark that status has been set
+              }
             }
 
             this.messageHandler?.(message)
           } catch (error) {
-            console.error('Failed to parse Python output:', line)
+            // Not a JSON line, log as raw output
+            console.log('[Python non-JSON]:', line)
           }
         }
       })
@@ -166,7 +248,8 @@ export class PythonBridge {
 
     // Handle stderr
     this.process.stderr?.on('data', (data) => {
-      console.error('Python stderr:', data.toString())
+      const stderrOutput = data.toString()
+      console.error('[Python stderr]:', stderrOutput)
       const errorMessage: PythonMessage = {
         type: 'error',
         message: data.toString(),
@@ -182,8 +265,8 @@ export class PythonBridge {
 
     // Handle process exit
     this.process.on('close', (code) => {
-      // Update task status in database
-      if (this.currentTaskId) {
+      // Update task status in database only if not already set by done message
+      if (this.currentTaskId && !this.taskStatusSet) {
         if (code === 0) {
           databaseManager.updateTask(this.currentTaskId, 'completed')
         } else if (code !== null) {
@@ -197,6 +280,7 @@ export class PythonBridge {
 
       this.process = null
       this.currentTaskId = null
+      this.taskStatusSet = false // Reset flag
 
       if (code !== 0 && code !== null) {
         this.messageHandler?.({
@@ -242,6 +326,7 @@ export class PythonBridge {
         this.currentTaskId = null
       }
 
+      this.taskStatusSet = false
       this.messageHandler = null
     }
   }
