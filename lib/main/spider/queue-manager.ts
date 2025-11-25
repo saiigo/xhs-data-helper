@@ -182,7 +182,17 @@ class QueueManager {
 
       // Start Python bridge (note: pythonBridge.start is synchronous, not async)
       try {
-        pythonBridge.start(taskConfig as any, onMessage)
+        // Transform queue task config to SpiderConfig format
+        // Queue tasks store config nested, but pythonBridge.start expects flat structure
+        const spiderConfig = {
+          taskType: taskConfig.taskType,
+          params: taskConfig.params,
+          cookie: taskConfig.config?.cookie,
+          saveOptions: taskConfig.config?.saveOptions,
+          paths: taskConfig.config?.paths,
+          proxy: taskConfig.config?.proxy,
+        }
+        pythonBridge.start(spiderConfig as any, onMessage)
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
         if (taskId) {
