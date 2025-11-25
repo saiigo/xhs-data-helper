@@ -1,0 +1,8 @@
+# Ignore downloaded Python runtimes (large binary files)
+darwin-arm64/
+darwin-x64/
+win32-x64/
+linux-x64/
+
+# Keep this .gitignore file
+!.gitignore

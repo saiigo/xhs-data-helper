@@ -1,0 +1,5 @@
+# Ignore installed Python packages
+*
+
+# Keep this .gitignore file
+!.gitignore

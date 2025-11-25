@@ -1,0 +1,85 @@
+name: Build and Upload Artifacts
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build_script: build:linux
+            artifact_name: xhs-helper-linux
+          - os: macos-latest
+            build_script: build:mac
+            artifact_name: xhs-helper-macos
+          - os: windows-latest
+            build_script: build:win
+            artifact_name: xhs-helper-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Determine pnpm store path
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Determine Python platform key
+        id: python-platform
+        shell: bash
+        run: |
+          node -e "console.log('key=' + process.platform + '-' + process.arch)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Python runtime and packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/python/${{ steps.python-platform.outputs.key }}/python
+            resources/python-packages
+          key: ${{ runner.os }}-python-${{ steps.python-platform.outputs.key }}-${{ hashFiles('python-engine/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-python-${{ steps.python-platform.outputs.key }}-
+            ${{ runner.os }}-python-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build application
+        run: pnpm run ${{ matrix.build_script }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/**
+          if-no-files-found: error
+          compression-level: 6
