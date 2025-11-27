@@ -1,14 +1,13 @@
-name: Build and Upload Artifacts
+name: Build and Release
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -86,5 +85,32 @@ jobs:
             dist/*.exe
             dist/*.dmg
             dist/*.AppImage
+            dist/*.yml
           if-no-files-found: error
           compression-level: 6
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/xhs-helper-windows/*.exe
+            artifacts/xhs-helper-windows/*.yml
+            artifacts/xhs-helper-macos/*.dmg
+            artifacts/xhs-helper-macos/*.yml
+            artifacts/xhs-helper-linux/*.AppImage
+            artifacts/xhs-helper-linux/*.yml
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

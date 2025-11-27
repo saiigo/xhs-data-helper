@@ -22,7 +22,10 @@
     "build:unpack": "run-s vite:build:app electron:build:dir",
     "build:win": "run-s setup:python vite:build:app electron:build:win",
     "build:mac": "run-s setup:python vite:build:app electron:build:mac",
-    "build:linux": "run-s setup:python vite:build:app electron:build:linux"
+    "build:linux": "run-s setup:python vite:build:app electron:build:linux",
+    "release": "node scripts/release.js",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "repository": {
     "type": "git",

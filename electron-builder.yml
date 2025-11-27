@@ -27,6 +27,8 @@ win:
       filter: ["**/*"]
   executableName: XHSHelper
 nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
