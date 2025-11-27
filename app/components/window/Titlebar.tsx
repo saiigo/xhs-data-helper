@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import React from 'react'
 import { useWindowContext } from './WindowContext'
 import { useTitlebarContext } from './TitlebarContext'
 import { TitlebarMenu } from './TitlebarMenu'
@@ -12,20 +12,8 @@ const SVG_PATHS = {
 
 export const Titlebar = () => {
   const { title, icon, titleCentered, menuItems } = useWindowContext().titlebar
-  const { menusVisible, setMenusVisible, closeActiveMenu } = useTitlebarContext()
+  const { menusVisible } = useTitlebarContext()
   const { window: wcontext } = useWindowContext()
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.altKey && menuItems?.length && !e.repeat) {
-        if (menusVisible) closeActiveMenu()
-        setMenusVisible(!menusVisible)
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [menusVisible, closeActiveMenu, setMenusVisible, menuItems])
 
   return (
     <div className={`window-titlebar ${wcontext?.platform ? `platform-${wcontext.platform}` : ''}`}>
