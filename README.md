@@ -206,7 +206,6 @@ sudo xattr -r -d com.apple.quarantine /Applications/xhs-helper.app
 ## 💬 反馈与支持
 
 - 🐛 [报告问题](https://github.com/PeanutSplash/xhs-data-helper/issues)
-- 💡 [功能建议](https://github.com/PeanutSplash/xhs-data-helper/discussions)
 - ⭐ 如果觉得好用,请给项目一个 Star!
 
 ---
