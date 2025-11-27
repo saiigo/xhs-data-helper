@@ -139,6 +139,12 @@ sudo xattr -r -d com.apple.quarantine /Applications/xhs-helper.app
 
 ---
 
+## 核心依赖
+
+本项目的爬虫能力基于 [Spider_XHS](https://github.com/cv-cat/Spider_XHS) 实现
+
+---
+
 ## 许可证
 
 本项目基于 [CC BY-NC 4.0](LICENSE) 开源
@@ -173,7 +179,6 @@ sudo xattr -r -d com.apple.quarantine /Applications/xhs-helper.app
 ### 技术栈
 - React 19 + TypeScript + Tailwind CSS
 - Electron 37
-- Python 引擎: [Spider_XHS](https://github.com/cv-cat/Spider_XHS)
 
 ### 本地开发
 ```bash
