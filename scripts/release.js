@@ -10,15 +10,33 @@ const path = require('path');
  *   node scripts/release.js        # bump patch (1.0.0 -> 1.0.1)
  *   node scripts/release.js minor  # bump minor (1.0.0 -> 1.1.0)
  *   node scripts/release.js major  # bump major (1.0.0 -> 2.0.0)
+ *   node scripts/release.js --dry-run  # preview changes without committing
  */
 
-function exec(command) {
-  console.log(`> ${command}`);
+// Parse arguments
+const args = process.argv.slice(2);
+const isDryRun = args.includes('--dry-run') || args.includes('-d');
+const versionType = args.find(arg => !arg.startsWith('-')) || 'patch';
+
+function exec(command, silent = false) {
+  if (isDryRun) {
+    console.log(`[DRY RUN] ${command}`);
+    return '';
+  }
+  if (!silent) console.log(`> ${command}`);
   try {
-    return execSync(command, { encoding: 'utf8', stdio: 'inherit' });
+    return execSync(command, { encoding: 'utf8', stdio: silent ? 'pipe' : 'inherit' });
   } catch (error) {
     console.error(`Failed to execute: ${command}`);
     process.exit(1);
+  }
+}
+
+function execQuiet(command) {
+  try {
+    return execSync(command, { encoding: 'utf8', stdio: 'pipe' }).trim();
+  } catch (error) {
+    return '';
   }
 }
 
@@ -28,18 +46,163 @@ function getCurrentVersion() {
   return pkg.version;
 }
 
-function main() {
-  const versionType = process.argv[2] || 'patch';
+function getLastTag() {
+  const tag = execQuiet('git describe --tags --abbrev=0 2>/dev/null');
+  return tag || null;
+}
 
+function generateChangelog(newVersion) {
+  const lastTag = getLastTag();
+  const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
+
+  console.log(`\nGenerating changelog from ${lastTag || 'beginning'}...`);
+
+  // Get commits since last tag
+  const commits = execQuiet(`git log ${range} --format=%s`).split('\n').filter(Boolean);
+
+  if (commits.length === 0) {
+    console.log('No new commits found');
+    return '';
+  }
+
+  // Categorize commits
+  const categories = {
+    feat: [],
+    fix: [],
+    docs: [],
+    chore: [],
+    refactor: [],
+    other: []
+  };
+
+  commits.forEach(commit => {
+    const match = commit.match(/^(\w+):\s*(.+)/);
+    if (match) {
+      const [, type, message] = match;
+      const category = categories[type] || categories.other;
+      category.push(message);
+    } else {
+      categories.other.push(commit);
+    }
+  });
+
+  // Build changelog entry
+  const date = new Date().toISOString().split('T')[0];
+  let entry = `## [${newVersion}] - ${date}\n\n`;
+
+  if (categories.feat.length > 0) {
+    entry += '### Features\n\n';
+    categories.feat.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (categories.fix.length > 0) {
+    entry += '### Bug Fixes\n\n';
+    categories.fix.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (categories.refactor.length > 0) {
+    entry += '### Refactoring\n\n';
+    categories.refactor.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (categories.docs.length > 0) {
+    entry += '### Documentation\n\n';
+    categories.docs.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (categories.chore.length > 0) {
+    entry += '### Chores\n\n';
+    categories.chore.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (categories.other.length > 0) {
+    entry += '### Other Changes\n\n';
+    categories.other.forEach(msg => entry += `- ${msg}\n`);
+    entry += '\n';
+  }
+
+  if (isDryRun) {
+    console.log('\n[DRY RUN] Changelog preview:\n');
+    console.log('---');
+    console.log(entry);
+    console.log('---\n');
+    return entry;
+  }
+
+  // Read existing changelog
+  const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
+  let existingContent = '';
+
+  if (fs.existsSync(changelogPath)) {
+    existingContent = fs.readFileSync(changelogPath, 'utf8');
+    // Remove header if it exists
+    existingContent = existingContent.replace(/^# Change Log\n\nAll notable changes are listed here\.\n\n<br>\n\n/m, '');
+  }
+
+  // Write new changelog
+  const newContent = `# Change Log
+
+All notable changes are listed here.
+
+<br>
+
+${entry}${existingContent}`;
+
+  fs.writeFileSync(changelogPath, newContent, 'utf8');
+  console.log('✓ CHANGELOG.md updated');
+
+  // Stage the changelog
+  exec('git add CHANGELOG.md', true);
+
+  return entry;
+}
+
+function calculateNewVersion(current, type) {
+  const [major, minor, patch] = current.split('.').map(Number);
+
+  switch (type) {
+    case 'major':
+      return `${major + 1}.0.0`;
+    case 'minor':
+      return `${major}.${minor + 1}.0`;
+    case 'patch':
+      return `${major}.${minor}.${patch + 1}`;
+    default:
+      throw new Error(`Invalid version type: ${type}`);
+  }
+}
+
+function main() {
   if (!['patch', 'minor', 'major'].includes(versionType)) {
     console.error(`Invalid version type: ${versionType}`);
-    console.error('Usage: node scripts/release.js [patch|minor|major]');
+    console.error('Usage: node scripts/release.js [patch|minor|major] [--dry-run]');
     process.exit(1);
   }
 
   const currentVersion = getCurrentVersion();
+  const newVersion = isDryRun
+    ? calculateNewVersion(currentVersion, versionType)
+    : null;
+
+  if (isDryRun) {
+    console.log('=== DRY RUN MODE ===\n');
+  }
+
   console.log(`Current version: ${currentVersion}`);
   console.log(`Bumping ${versionType} version...\n`);
+
+  if (isDryRun) {
+    console.log(`New version will be: ${newVersion}\n`);
+    generateChangelog(newVersion);
+    console.log('[DRY RUN] No changes were made.');
+    console.log('Run without --dry-run to perform the release.');
+    return;
+  }
 
   // Check for uncommitted changes
   try {
@@ -49,12 +212,24 @@ function main() {
     process.exit(1);
   }
 
-  // Bump version and create tag
-  exec(`npm version ${versionType} -m "chore: release v%s"`);
+  // Bump version first (this updates package.json)
+  exec(`npm version ${versionType} --no-git-tag-version`);
 
-  const newVersion = getCurrentVersion();
-  console.log(`\n✓ Version bumped to ${newVersion}`);
-  console.log(`✓ Git tag v${newVersion} created`);
+  const actualNewVersion = getCurrentVersion();
+
+  // Generate changelog
+  generateChangelog(actualNewVersion);
+
+  // Commit package.json and CHANGELOG.md together
+  exec(`git add package.json`);
+  exec(`git commit -m "chore: release v${actualNewVersion}"`);
+
+  // Create git tag
+  exec(`git tag v${actualNewVersion}`);
+
+  console.log(`\n✓ Version bumped to ${actualNewVersion}`);
+  console.log(`✓ CHANGELOG.md updated`);
+  console.log(`✓ Git tag v${actualNewVersion} created`);
   console.log(`\nNext steps:`);
   console.log(`  git push origin main --tags`);
 }

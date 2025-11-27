@@ -104,11 +104,11 @@ jobs:
         with:
           files: |
             artifacts/xhs-helper-windows/*.exe
-            artifacts/xhs-helper-windows/*.yml
+            artifacts/xhs-helper-windows/latest.yml
             artifacts/xhs-helper-macos/*.dmg
-            artifacts/xhs-helper-macos/*.yml
+            artifacts/xhs-helper-macos/latest-mac.yml
             artifacts/xhs-helper-linux/*.AppImage
-            artifacts/xhs-helper-linux/*.yml
+            artifacts/xhs-helper-linux/latest-linux.yml
           draft: false
           prerelease: false
           generate_release_notes: true
