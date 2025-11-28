@@ -86,7 +86,7 @@ function generateChangelog(newVersion) {
     }
   });
 
-  // Build changelog entry
+  // Build changelog entry - only include user-facing changes
   const date = new Date().toISOString().split('T')[0];
   let entry = `## [${newVersion}] - ${date}\n\n`;
 
@@ -108,23 +108,7 @@ function generateChangelog(newVersion) {
     entry += '\n';
   }
 
-  if (categories.docs.length > 0) {
-    entry += '### Documentation\n\n';
-    categories.docs.forEach(msg => entry += `- ${msg}\n`);
-    entry += '\n';
-  }
-
-  if (categories.chore.length > 0) {
-    entry += '### Chores\n\n';
-    categories.chore.forEach(msg => entry += `- ${msg}\n`);
-    entry += '\n';
-  }
-
-  if (categories.other.length > 0) {
-    entry += '### Other Changes\n\n';
-    categories.other.forEach(msg => entry += `- ${msg}\n`);
-    entry += '\n';
-  }
+  // Skip docs, chore, and other - not user-facing changes
 
   if (isDryRun) {
     console.log('\n[DRY RUN] Changelog preview:\n');
@@ -231,7 +215,7 @@ function main() {
   console.log(`✓ CHANGELOG.md updated`);
   console.log(`✓ Git tag v${actualNewVersion} created`);
   console.log(`\nNext steps:`);
-  console.log(`  git push origin main --tags`);
+  console.log(`  git push origin main && git push origin v${actualNewVersion}`);
 }
 
 main();
