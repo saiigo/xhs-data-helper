@@ -4,6 +4,12 @@ All notable changes are listed here.
 
 <br>
 
+## [1.0.3] - 2025-11-28
+
+### Chores
+
+- Add zip artifact support to build workflow
+
 ## [1.0.2] - 2025-11-27
 
 ### Features
