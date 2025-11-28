@@ -1,5 +1,7 @@
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, shell } from 'electron'
+
+const isMac = process.platform === 'darwin'
 
 export type UpdateStatus =
   | 'idle'
@@ -89,6 +91,10 @@ class UpdateManager {
 
   async downloadUpdate(): Promise<void> {
     if (this.state.status === 'available') {
+      if (isMac) {
+        shell.openExternal('https://github.com/PeanutSplash/xhs-data-helper/releases/latest')
+        return
+      }
       await autoUpdater.downloadUpdate()
     }
   }

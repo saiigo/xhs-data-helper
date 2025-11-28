@@ -53,7 +53,7 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: xhs-helper-${version}.${ext}
+  artifactName: xhs-helper-${version}-${arch}.${ext}
 linux:
   extraResources:
     # Python runtime (Linux - will use correct arch automatically)
