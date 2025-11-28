@@ -383,7 +383,7 @@ export default function App() {
               {updateState.status === 'checking' || updateState.status === 'downloading' ? (
                 <Loader2 className="w-4 h-4 text-primary animate-spin" />
               ) : updateState.status === 'available' ? (
-                <Download className="w-4 h-4 text-primary" />
+                <DownloadIcon className="w-4 h-4 text-primary" />
               ) : updateState.status === 'downloaded' ? (
                 <CheckCircle2 className="w-4 h-4 text-green-500" />
               ) : (
