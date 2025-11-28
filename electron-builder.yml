@@ -39,6 +39,9 @@ mac:
     - from: "resources/python/darwin-${arch}/python"
       to: "python"
       filter: ["**/*"]
+  target:
+    - dmg
+    - zip
   entitlementsInherit: resources/build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
