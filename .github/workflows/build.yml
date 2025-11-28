@@ -71,8 +71,21 @@ jobs:
             ${{ runner.os }}-python-${{ steps.python-platform.outputs.key }}-
             ${{ runner.os }}-python-
 
+      - name: Cache Python runtime for x64 (macOS only)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: resources/python/darwin-x64/python
+          key: macOS-python-darwin-x64-${{ hashFiles('python-engine/requirements.txt') }}
+          restore-keys: |
+            macOS-python-darwin-x64-
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Download Python for x64 (macOS only)
+        if: runner.os == 'macOS'
+        run: node scripts/download-python.js darwin-x64
 
       - name: Build application
         run: pnpm run ${{ matrix.build_script }}
@@ -136,7 +149,8 @@ jobs:
             | 平台 | 下载 |
             |------|------|
             | 🪟 Windows | [xhs-helper-${{ steps.version.outputs.version }}-setup.exe](https://github.com/PeanutSplash/xhs-data-helper/releases/download/${{ github.ref_name }}/xhs-helper-${{ steps.version.outputs.version }}-setup.exe) |
-            | 🍎 macOS | [xhs-helper-${{ steps.version.outputs.version }}.dmg](https://github.com/PeanutSplash/xhs-data-helper/releases/download/${{ github.ref_name }}/xhs-helper-${{ steps.version.outputs.version }}.dmg) |
+            | 🍎 macOS (Apple Silicon) | [xhs-helper-${{ steps.version.outputs.version }}-arm64.dmg](https://github.com/PeanutSplash/xhs-data-helper/releases/download/${{ github.ref_name }}/xhs-helper-${{ steps.version.outputs.version }}-arm64.dmg) |
+            | 🍎 macOS (Intel) | [xhs-helper-${{ steps.version.outputs.version }}-x64.dmg](https://github.com/PeanutSplash/xhs-data-helper/releases/download/${{ github.ref_name }}/xhs-helper-${{ steps.version.outputs.version }}-x64.dmg) |
             | 🐧 Linux | [xhs-helper-${{ steps.version.outputs.version }}.AppImage](https://github.com/PeanutSplash/xhs-data-helper/releases/download/${{ github.ref_name }}/xhs-helper-${{ steps.version.outputs.version }}.AppImage) |
 
             ---

@@ -39,9 +39,12 @@ mac:
     - from: "resources/python/darwin-${arch}/python"
       to: "python"
       filter: ["**/*"]
+  artifactName: xhs-helper-${version}-${arch}.${ext}
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
   entitlementsInherit: resources/build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -50,7 +53,7 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: xhs-helper-${version}.${ext}
 linux:
   extraResources:
     # Python runtime (Linux - will use correct arch automatically)
