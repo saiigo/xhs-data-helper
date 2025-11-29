@@ -151,11 +151,13 @@ class QueueManager {
     return new Promise((resolve) => {
       let taskId: number | null = null
 
-      // Create task in database
-      taskId = databaseManager.createTask(taskConfig.taskType, taskConfig.params, taskConfig.config)
-
       // Message handler
       const onMessage = (message: PythonMessage) => {
+        // Get task ID from pythonBridge (created there)
+        if (!taskId) {
+          taskId = pythonBridge.getCurrentTaskId()
+        }
+
         // Save log to database
         if (taskId) {
           databaseManager.addLog(taskId, message)
@@ -168,22 +170,15 @@ class QueueManager {
 
         // Handle task completion
         if (message.type === 'done') {
-          if (taskId) {
-            databaseManager.updateTask(taskId, 'completed', undefined, message.count)
-          }
           resolve({ success: true, taskId: taskId || undefined })
         } else if (message.type === 'error') {
-          if (taskId) {
-            databaseManager.updateTask(taskId, 'failed', message.message)
-          }
           resolve({ success: false, error: message.message })
         }
       }
 
-      // Start Python bridge (note: pythonBridge.start is synchronous, not async)
+      // Start Python bridge
       try {
         // Transform queue task config to SpiderConfig format
-        // Queue tasks store config nested, but pythonBridge.start expects flat structure
         const spiderConfig = {
           taskType: taskConfig.taskType,
           params: taskConfig.params,
@@ -195,9 +190,6 @@ class QueueManager {
         pythonBridge.start(spiderConfig as any, onMessage)
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-        if (taskId) {
-          databaseManager.updateTask(taskId, 'failed', errorMessage)
-        }
         resolve({ success: false, error: errorMessage })
       }
     })
