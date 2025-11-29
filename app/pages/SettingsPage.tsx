@@ -250,10 +250,10 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
               </div>
             </CardHeader>
             <CardContent>
-              <Tabs defaultValue="auto" className="w-full">
+              <Tabs defaultValue="manual" className="w-full">
                 <TabsList className="grid w-full grid-cols-2 mb-6">
-                  <TabsTrigger value="auto">一键登录 (推荐)</TabsTrigger>
-                  <TabsTrigger value="manual">手动 Cookie</TabsTrigger>
+                  <TabsTrigger value="auto">一键登录</TabsTrigger>
+                  <TabsTrigger value="manual">手动 Cookie (推荐)</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="auto" className="space-y-4">
