@@ -269,6 +269,27 @@ class DatabaseManager {
     this.db.exec('VACUUM')
   }
 
+  /**
+   * Fix stuck running tasks (mark as stopped if they're not actually running)
+   * This handles tasks that were interrupted without proper cleanup
+   */
+  fixStuckTasks(): number {
+    const stmt = this.db.prepare(`
+      UPDATE tasks
+      SET status = 'stopped',
+          completed_at = ?,
+          error_message = '任务被中断'
+      WHERE status = 'running'
+        AND started_at < ?
+    `)
+
+    // Mark as stuck if running for more than 10 minutes without updates
+    const tenMinutesAgo = Date.now() - 10 * 60 * 1000
+    const result = stmt.run(Date.now(), tenMinutesAgo)
+
+    return result.changes
+  }
+
   // ========== Queue Management Methods ==========
 
   /**

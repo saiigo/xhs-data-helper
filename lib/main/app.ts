@@ -6,8 +6,15 @@ import { registerAppHandlers } from '@/lib/conveyor/handlers/app-handler'
 import { registerSpiderHandlers } from '@/lib/conveyor/handlers/spider-handler'
 import { registerUpdateHandlers } from '@/lib/conveyor/handlers/update-handler'
 import { updateManager } from '@/lib/main/updater/update-manager'
+import { databaseManager } from '@/lib/main/spider/database-manager'
 
 export function createAppWindow(): void {
+  // Fix any stuck tasks from previous session
+  const fixedCount = databaseManager.fixStuckTasks()
+  if (fixedCount > 0) {
+    console.log(`Fixed ${fixedCount} stuck tasks from previous session`)
+  }
+
   // Create the main window.
   const mainWindow = new BrowserWindow({
     width: 1300,
