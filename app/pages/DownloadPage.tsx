@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Download, FileText, User, Search, Loader2, Sparkles, Save, FileSpreadsheet, Image } from 'lucide-react'
+import { getCurrentLocation } from '../utils/geolocation'
 import { motion } from 'framer-motion'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
@@ -35,6 +36,34 @@ export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = 
   const [sortType, setSortType] = useState('0')
   const [noteType, setNoteType] = useState('0')
   const [timeRange, setTimeRange] = useState('0')
+  const [noteRange, setNoteRange] = useState('0')
+  const [posDistance, setPosDistance] = useState('0')
+  const [geoLocation, setGeoLocation] = useState<{ latitude: number; longitude: number } | null>(null)
+  const [isGettingLocation, setIsGettingLocation] = useState(false)
+
+  // Get user's geolocation
+  const getLocation = async () => {
+    setIsGettingLocation(true)
+
+    try {
+      const location = await getCurrentLocation()
+      setGeoLocation(location)
+      toast.success('位置获取成功')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '位置获取失败')
+      setPosDistance('0')
+    } finally {
+      setIsGettingLocation(false)
+    }
+  }
+
+  // When posDistance changes, request location if needed
+  useEffect(() => {
+    if (posDistance !== '0' && !geoLocation) {
+      getLocation()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posDistance, geoLocation])
 
   // Common state
   const [saveMode, setSaveMode] = useState<SaveMode>('all')
@@ -74,14 +103,22 @@ export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = 
           toast.error('请输入搜索关键词!')
           return
         }
+
+        // Validate location if posDistance is set
+        if (posDistance !== '0' && !geoLocation) {
+          toast.error('使用位置筛选需要先获取您的位置信息!')
+          return
+        }
+
         params = {
           query: searchQuery.trim(),
           requireNum: searchCount,
           sortType: parseInt(sortType),
           noteType: parseInt(noteType),
           noteTime: parseInt(timeRange),
-          noteRange: 0,
-          posDistance: 0,
+          noteRange: parseInt(noteRange),
+          posDistance: parseInt(posDistance),
+          ...(geoLocation && { geo: geoLocation }),
         }
       }
 
@@ -266,50 +303,89 @@ export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = 
 
                       <Separator className="bg-border/50" />
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="space-y-2">
-                          <Label className="text-xs uppercase tracking-wider text-muted-foreground">排序方式</Label>
-                          <Select value={sortType} onValueChange={setSortType}>
-                            <SelectTrigger className="bg-background/50 border-border/50">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">综合排序</SelectItem>
-                              <SelectItem value="1">最新</SelectItem>
-                              <SelectItem value="2">最多点赞</SelectItem>
-                              <SelectItem value="3">最多评论</SelectItem>
-                              <SelectItem value="4">最多收藏</SelectItem>
-                            </SelectContent>
-                          </Select>
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-xs uppercase tracking-wider text-muted-foreground">排序方式</Label>
+                            <Select value={sortType} onValueChange={setSortType}>
+                              <SelectTrigger className="bg-background/50 border-border/50">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">综合排序</SelectItem>
+                                <SelectItem value="1">最新</SelectItem>
+                                <SelectItem value="2">最多点赞</SelectItem>
+                                <SelectItem value="3">最多评论</SelectItem>
+                                <SelectItem value="4">最多收藏</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label className="text-xs uppercase tracking-wider text-muted-foreground">笔记类型</Label>
+                            <Select value={noteType} onValueChange={setNoteType}>
+                              <SelectTrigger className="bg-background/50 border-border/50">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">不限</SelectItem>
+                                <SelectItem value="1">视频笔记</SelectItem>
+                                <SelectItem value="2">图文笔记</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label className="text-xs uppercase tracking-wider text-muted-foreground">时间范围</Label>
+                            <Select value={timeRange} onValueChange={setTimeRange}>
+                              <SelectTrigger className="bg-background/50 border-border/50">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">不限</SelectItem>
+                                <SelectItem value="1">一天内</SelectItem>
+                                <SelectItem value="2">一周内</SelectItem>
+                                <SelectItem value="3">半年内</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label className="text-xs uppercase tracking-wider text-muted-foreground">笔记类型</Label>
-                          <Select value={noteType} onValueChange={setNoteType}>
-                            <SelectTrigger className="bg-background/50 border-border/50">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">不限</SelectItem>
-                              <SelectItem value="1">视频笔记</SelectItem>
-                              <SelectItem value="2">图文笔记</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-xs uppercase tracking-wider text-muted-foreground">笔记范围</Label>
+                            <Select value={noteRange} onValueChange={setNoteRange}>
+                              <SelectTrigger className="bg-background/50 border-border/50">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">不限</SelectItem>
+                                <SelectItem value="1">已看过</SelectItem>
+                                <SelectItem value="2">未看过</SelectItem>
+                                <SelectItem value="3">已关注</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
 
-                        <div className="space-y-2">
-                          <Label className="text-xs uppercase tracking-wider text-muted-foreground">时间范围</Label>
-                          <Select value={timeRange} onValueChange={setTimeRange}>
-                            <SelectTrigger className="bg-background/50 border-border/50">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">不限</SelectItem>
-                              <SelectItem value="1">一天内</SelectItem>
-                              <SelectItem value="2">一周内</SelectItem>
-                              <SelectItem value="3">半年内</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <div className="space-y-2">
+                            <Label className="text-xs uppercase tracking-wider text-muted-foreground">位置距离</Label>
+                            <Select value={posDistance} onValueChange={setPosDistance}>
+                              <SelectTrigger className="bg-background/50 border-border/50">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">不限</SelectItem>
+                                <SelectItem value="1">同城</SelectItem>
+                                <SelectItem value="2">附近</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {posDistance !== '0' && isGettingLocation && (
+                              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                正在获取位置...
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
