@@ -14,7 +14,11 @@ extraResources:
   # Python scripts and Node.js dependencies (required for PyExecJS)
   - from: "python-engine"
     to: "python-engine"
-    filter: ["**/*", "!__pycache__", "!*.pyc", "!.git", "!.gitignore", "!.env"]
+    filter: ["**/*", "!__pycache__", "!*.pyc", "!.git", "!.gitignore", "!.env", "!node_modules"]
+  # Node.js dependencies for PyExecJS (electron-builder excludes node_modules by default)
+  - from: "python-engine/node_modules"
+    to: "python-engine/node_modules"
+    filter: ["**/*"]
   # Python packages (pre-installed dependencies)
   - from: "resources/python-packages"
     to: "python-packages"
