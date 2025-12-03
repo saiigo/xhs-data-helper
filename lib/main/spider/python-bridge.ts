@@ -137,6 +137,18 @@ export class PythonBridge {
   }
 
   /**
+   * Get Node.js modules path for PyExecJS
+   * PyExecJS needs NODE_PATH to locate node_modules (like crypto-js)
+   */
+  private getNodeModulesPath(): string {
+    if (app.isPackaged) {
+      return path.join(process.resourcesPath, 'python-engine', 'node_modules')
+    }
+    // In development
+    return path.join(app.getAppPath(), 'python-engine', 'node_modules')
+  }
+
+  /**
    * Get Python packages directory path
    * In production, packages are pre-installed with Python
    * In development, use system packages
@@ -174,9 +186,10 @@ export class PythonBridge {
     const configJson = JSON.stringify(config)
 
     const packagesPath = this.getPackagesPath()
+    const nodeModulesPath = this.getNodeModulesPath()
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      NODE_PATH: process.execPath, // For PyExecJS to find Node.js
+      NODE_PATH: nodeModulesPath, // For PyExecJS to find node_modules (crypto-js, etc.)
     }
 
     // Add PYTHONPATH if packages path exists
@@ -362,10 +375,11 @@ export class PythonBridge {
       const pythonPath = this.getPythonPath()
       const cliPath = this.getCliPath()
       const packagesPath = this.getPackagesPath()
+      const nodeModulesPath = this.getNodeModulesPath()
 
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        NODE_PATH: process.execPath,
+        NODE_PATH: nodeModulesPath, // For PyExecJS to find node_modules (crypto-js, etc.)
       }
 
       // Add PYTHONPATH if packages path exists
