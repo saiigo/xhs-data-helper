@@ -6,33 +6,7 @@ All notable changes are listed here.
 
 ## [1.0.13] - 2025-12-04
 
-### Features
-
-- Enhances UI with custom scrollbars and updates settings
-- Introduces geolocation and note range search filters
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
-
-### Bug Fixes
-
-- Fix PyExecJS NODE_PATH to locate node_modules correctly
-- Install Node.js dependencies for PyExecJS during Python setup
-- Fixes stuck tasks on application startup
-- Delegates task database operations to Python bridge
-- Removes media type selection from download options
-- Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
-
-# Change Log
-
-All notable changes are listed here.
-
-<br>
+_No user-facing changes._
 
 ## [1.0.12] - 2025-12-03
 
@@ -42,50 +16,17 @@ All notable changes are listed here.
 
 ## [1.0.11] - 2025-12-02
 
+_No user-facing changes (build improvements)._
+
 ## [1.0.10] - 2025-11-30
-
-### Features
-
-- Enhances UI with custom scrollbars and updates settings
-- Introduces geolocation and note range search filters
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
 
 ### Bug Fixes
 
 - Install Node.js dependencies for PyExecJS during Python setup
-- Fixes stuck tasks on application startup
-- Delegates task database operations to Python bridge
-- Removes media type selection from download options
-- Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
 
 ## [1.0.9] - 2025-11-30
 
-### Features
-
-- Enhances UI with custom scrollbars and updates settings
-- Introduces geolocation and note range search filters
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
-
-### Bug Fixes
-
-- Fixes stuck tasks on application startup
-- Delegates task database operations to Python bridge
-- Removes media type selection from download options
-- Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
+_No user-facing changes (build improvements)._
 
 ## [1.0.8] - 2025-11-29
 
@@ -93,113 +34,35 @@ All notable changes are listed here.
 
 - Enhances UI with custom scrollbars and updates settings
 - Introduces geolocation and note range search filters
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
 
 ### Bug Fixes
 
 - Fixes stuck tasks on application startup
 - Delegates task database operations to Python bridge
 - Removes media type selection from download options
-- Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
 
 ## [1.0.7] - 2025-11-29
 
-### Features
-
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
-
-### Bug Fixes
-
-- Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
+_No user-facing changes (documentation updates)._
 
 ## [1.0.6] - 2025-11-28
 
-### Features
-
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
-
 ### Bug Fixes
 
 - Updates download icon component name
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
-
-# Change Log
-
-All notable changes are listed here.
-
-<br>
 
 ## [1.0.5] - 2025-11-28
 
+_No user-facing changes (build improvements)._
+
 ## [1.0.4] - 2025-11-28
+
+_No user-facing changes (build improvements)._
 
 ## [1.0.3] - 2025-11-28
 
-### Chores
+_No user-facing changes (build improvements)._
 
-- Add zip artifact support to build workflow
+## [1.0.2] - 2025-11-28
 
-## [1.0.2] - 2025-11-27
-
-### Features
-
-- Update license and improve documentation structure
-- Improve login window appearance and behavior
-
-### Bug Fixes
-
-- Transform queue task config for Python bridge compatibility
-- Add PYTHONPATH support for cookie validation
-
-### Refactoring
-
-- Refactor download workflow and improve queue management
-
-### Documentation
-
-- update reademe
-- update readme
-- Remove feature suggestions link from README
-
-### Chores
-
-- Automates changelog generation and release dry run
-- release v1.0.1
-- Automates release process with versioning and GitHub Releases
-- update build config
-- remove menu
-- Simplify cookie validation success messages
-- Add Python version file to gitignore
-- Restructure Python runtime packaging for platform-specific builds
-- Prevent automatic publishing in build scripts
-- Enable recursive submodule checkout in build workflow
-
-### Other Changes
-
-- init
-
-# Change Log
-
-All notable changes are listed here.
-
-<br>
+_Initial public release._

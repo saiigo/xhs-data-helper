@@ -53,14 +53,54 @@ function getLastTag() {
   return tag || null;
 }
 
+function getSubmodules() {
+  const output = execQuiet('git config --file .gitmodules --get-regexp path');
+  if (!output) return [];
+  return output.split('\n').filter(Boolean).map(line => {
+    const match = line.match(/submodule\.(.+)\.path\s+(.+)/);
+    return match ? { name: match[1], path: match[2] } : null;
+  }).filter(Boolean);
+}
+
+function getSubmoduleCommits(submodulePath, lastTag) {
+  // Get submodule commit at last tag
+  const lastCommit = lastTag
+    ? execQuiet(`git ls-tree ${lastTag} ${submodulePath} | awk '{print $3}'`)
+    : null;
+
+  // Get current submodule commit
+  const currentCommit = execQuiet(`git ls-tree HEAD ${submodulePath} | awk '{print $3}'`);
+
+  if (!currentCommit || lastCommit === currentCommit) return [];
+
+  // Get commits from submodule
+  const range = lastCommit ? `${lastCommit}..${currentCommit}` : currentCommit;
+  const commits = execQuiet(`git -C ${submodulePath} log ${range} --format=%s 2>/dev/null`);
+
+  return commits ? commits.split('\n').filter(Boolean) : [];
+}
+
 function generateChangelog(newVersion) {
   const lastTag = getLastTag();
   const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
 
   console.log(`\nGenerating changelog from ${lastTag || 'beginning'}...`);
 
-  // Get commits since last tag
-  const commits = execQuiet(`git log ${range} --format=%s`).split('\n').filter(Boolean);
+  // Get commits since last tag (main repo)
+  const mainCommits = execQuiet(`git log ${range} --format=%s`).split('\n').filter(Boolean);
+
+  // Get commits from submodules
+  const submodules = getSubmodules();
+  let submoduleCommits = [];
+  submodules.forEach(({ name, path: subPath }) => {
+    const commits = getSubmoduleCommits(subPath, lastTag);
+    if (commits.length > 0) {
+      console.log(`Found ${commits.length} commits in submodule: ${name}`);
+      submoduleCommits = submoduleCommits.concat(commits.map(c => `[${name}] ${c}`));
+    }
+  });
+
+  const commits = [...mainCommits, ...submoduleCommits];
 
   if (commits.length === 0) {
     console.log('No new commits found');
@@ -126,8 +166,8 @@ function generateChangelog(newVersion) {
 
   if (fs.existsSync(changelogPath)) {
     existingContent = fs.readFileSync(changelogPath, 'utf8');
-    // Remove header if it exists
-    existingContent = existingContent.replace(/^# Change Log\n\nAll notable changes are listed here\.\n\n<br>\n\n/m, '');
+    // Remove ALL headers (fix for accumulated duplicates)
+    existingContent = existingContent.replace(/# Change Log\n\nAll notable changes are listed here\.\n\n<br>\n\n/g, '');
   }
 
   // Write new changelog
