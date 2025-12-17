@@ -5,6 +5,7 @@ import { registerWindowHandlers } from '@/lib/conveyor/handlers/window-handler'
 import { registerAppHandlers } from '@/lib/conveyor/handlers/app-handler'
 import { registerSpiderHandlers } from '@/lib/conveyor/handlers/spider-handler'
 import { registerUpdateHandlers } from '@/lib/conveyor/handlers/update-handler'
+import { registerFeishuHandlers } from '@/lib/conveyor/handlers/feishu-handler'
 import { updateManager } from '@/lib/main/updater/update-manager'
 import { databaseManager } from '@/lib/main/spider/database-manager'
 
@@ -40,6 +41,7 @@ export function createAppWindow(): void {
   registerAppHandlers(app)
   registerSpiderHandlers(mainWindow)
   registerUpdateHandlers()
+  registerFeishuHandlers()
 
   // Initialize update manager
   updateManager.init(mainWindow)

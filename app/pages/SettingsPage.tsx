@@ -46,6 +46,12 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'light'
   })
 
+  // 飞书API配置
+  const [feishuAppId, setFeishuAppId] = useState('')
+  const [feishuAppSecret, setFeishuAppSecret] = useState('')
+  const [feishuReadInterval, setFeishuReadInterval] = useState('3')
+  const [feishuMockEnabled, setFeishuMockEnabled] = useState(true)
+
   useEffect(() => {
     loadConfig()
   }, [])
@@ -59,8 +65,69 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
       setProxyEnabled(config.proxy.enabled)
       setProxyUrl(config.proxy.url)
       // Cookie 状态由 App.tsx 启动时验证，这里不重复验证
+      
+      // 加载飞书API配置
+    const feishuConfig = await window.conveyor.feishu.getConfig()
+    setFeishuAppId(feishuConfig.appId || '')
+    setFeishuAppSecret(feishuConfig.appSecret || '')
+    setFeishuReadInterval((feishuConfig.readInterval || 3).toString())
+    setFeishuMockEnabled(feishuConfig.mockEnabled !== undefined ? feishuConfig.mockEnabled : true)
     } catch (error) {
       console.error('Failed to load config:', error)
+    }
+  }
+  
+  // 保存飞书API配置
+  const handleSaveFeishuConfig = async () => {
+    setSaving(true)
+    try {
+      console.log('=== 开始保存飞书配置 ===')
+      console.log('window.conveyor是否存在:', typeof window.conveyor !== 'undefined')
+      if (window.conveyor) {
+        console.log('window.conveyor对象:', window.conveyor)
+        console.log('window.conveyor.feishu是否存在:', typeof window.conveyor.feishu !== 'undefined')
+        if (window.conveyor.feishu) {
+          console.log('window.conveyor.feishu对象:', window.conveyor.feishu)
+          console.log('setConfig方法是否存在:', typeof window.conveyor.feishu.setConfig === 'function')
+          
+          // 验证读取间隔是否为有效数字
+          const interval = parseInt(feishuReadInterval)
+          if (isNaN(interval) || interval < 1 || interval > 60) {
+            toast.error('读取间隔秒必须是1-60之间的有效数字')
+            return
+          }
+          
+          console.log('准备保存的配置:', {
+            appId: feishuAppId,
+            appSecret: feishuAppSecret,
+            readInterval: interval,
+            mockEnabled: feishuMockEnabled
+          })
+          const result = await window.conveyor.feishu.setConfig({
+            appId: feishuAppId,
+            appSecret: feishuAppSecret,
+            readInterval: interval,
+            mockEnabled: feishuMockEnabled
+          })
+          console.log('飞书配置保存成功，返回结果:', result)
+          toast.success('飞书API配置保存成功!')
+        } else {
+          console.error('window.conveyor.feishu不存在')
+          toast.error('保存失败: 飞书API不可用')
+        }
+      } else {
+        console.error('window.conveyor不存在')
+        toast.error('保存失败: Conveyor API不可用')
+      }
+    } catch (error) {
+      console.error('Failed to save feishu config:', error)
+      console.error('错误类型:', typeof error)
+      console.error('错误详情:', JSON.stringify(error, null, 2))
+      console.error('错误堆栈:', error instanceof Error ? error.stack : 'N/A')
+      toast.error('保存失败')
+    } finally {
+      setSaving(false)
+      console.log('=== 保存飞书配置结束 ===')
     }
   }
 
@@ -216,7 +283,7 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
       {/* Page Header */}
       <motion.div variants={itemVariants}>
         <h1 className="text-3xl font-bold tracking-tight text-foreground">设置</h1>
-        <p className="text-muted-foreground mt-2 text-lg">配置 Cookie、保存路径和代理</p>
+        <p className="text-muted-foreground mt-2 text-lg">配置 Cookie、保存路径、代理和飞书API</p>
       </motion.div>
 
       <div className="grid grid-cols-1 gap-6">
@@ -462,6 +529,106 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
               <Button onClick={handleSaveProxy} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
                 <Save className="w-4 h-4 mr-2" />
                 {saving ? '保存中...' : '保存代理设置'}
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+
+
+        {/* 飞书API配置 */}
+        <motion.div variants={itemVariants}>
+          <Card className="border-border bg-card shadow-sm">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
+                  <Globe className="w-5 h-5 text-green-600" />
+                </div>
+                <div>
+                  <CardTitle>飞书API配置</CardTitle>
+                  <CardDescription>配置飞书开放平台API密钥和读取设置</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="feishuAppId">飞书App ID</Label>
+                <Input
+                  id="feishuAppId"
+                  placeholder="cli_slkdjoiwjeoiwj"
+                  value={feishuAppId}
+                  onChange={(e) => setFeishuAppId(e.target.value)}
+                  className="bg-secondary/20 border-border focus:border-primary/50"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="feishuAppSecret">飞书App Secret</Label>
+                <Input
+                  id="feishuAppSecret"
+                  type="password"
+                  placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  value={feishuAppSecret}
+                  onChange={(e) => setFeishuAppSecret(e.target.value)}
+                  className="bg-secondary/20 border-border focus:border-primary/50"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="feishuReadInterval">读取间隔秒</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="feishuReadInterval"
+                    type="number"
+                    placeholder="3"
+                    min="1"
+                    max="60"
+                    value={feishuReadInterval}
+                    onChange={(e) => setFeishuReadInterval(e.target.value)}
+                    className="bg-secondary/20 border-border focus:border-primary/50"
+                  />
+                  <div className="flex items-center text-muted-foreground text-sm">秒</div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  读取博主笔记列表时的间隔时间，默认3秒，范围1-60秒
+                </p>
+              </div>
+              
+              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
+                <div className="flex items-center gap-3">
+                  <Key className="w-5 h-5 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium text-sm">启用Mock数据</p>
+                    <p className="text-xs text-muted-foreground">使用模拟数据而不是真实请求飞书API</p>
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={feishuMockEnabled}
+                    onChange={(e) => setFeishuMockEnabled(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-secondary peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                </label>
+              </div>
+              
+              <Alert className="bg-secondary/20 border-border">
+                <Info className="h-4 w-4 text-primary" />
+                <AlertDescription className="text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground">💡 如何获取飞书API密钥:</p>
+                  <ol className="list-decimal list-inside space-y-1 ml-2 opacity-80">
+                    <li>访问 <a href="https://open.feishu.cn" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">飞书开放平台</a></li>
+                    <li>创建企业自建应用</li>
+                    <li>在应用管理中获取App ID和App Secret</li>
+                    <li>为应用添加"文档阅读"等相关权限</li>
+                  </ol>
+                </AlertDescription>
+              </Alert>
+              
+              <Button onClick={handleSaveFeishuConfig} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
+                <Save className="w-4 h-4 mr-2" />
+                {saving ? '保存中...' : '保存飞书API配置'}
               </Button>
             </CardContent>
           </Card>

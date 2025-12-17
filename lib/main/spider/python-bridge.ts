@@ -16,6 +16,7 @@ export interface SpiderConfig {
   saveOptions: {
     mode: 'excel' | 'media' | 'all'
     excelName?: string
+    download?: boolean
   }
   paths: {
     media: string

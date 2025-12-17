@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Settings, Zap, History, Loader2, RefreshCw, Download as DownloadIcon, CheckCircle2 } from 'lucide-react'
+import { Settings, Zap, History, Loader2, RefreshCw, Download as DownloadIcon, CheckCircle2, MessageSquare } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import SettingsPage from './pages/SettingsPage'
 import DownloadPage from './pages/DownloadPage'
 import HistoryPage from './pages/HistoryPage'
+import FeishuPage from './pages/FeishuPage'
 import { Badge } from './components/ui/badge'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
@@ -12,7 +13,7 @@ import type { Log, Task } from '@/lib/conveyor/api/spider-api'
 import type { PythonMessage } from '@/lib/conveyor/schemas/spider-schema'
 import './styles/app.css'
 
-type Page = 'download' | 'history' | 'settings'
+type Page = 'download' | 'history' | 'settings' | 'feishu'
 type CookieStatus = 'valid' | 'invalid' | 'unknown' | 'checking'
 
 // LogEntry for UI display (formatted timestamp)
@@ -249,11 +250,17 @@ export default function App() {
 
   const menuItems = [
     {
-      id: 'download' as Page,
-      label: '下载',
-      icon: DownloadIcon,
-      description: '新建下载任务',
+      id: 'feishu' as Page,
+      label: '飞书',
+      icon: MessageSquare,
+      description: '飞书集成功能',
     },
+    // {
+    //   id: 'download' as Page,
+    //   label: '下载',
+    //   icon: DownloadIcon,
+    //   description: '新建下载任务',
+    // },
     {
       id: 'history' as Page,
       label: '历史',
@@ -422,8 +429,8 @@ export default function App() {
                 className="min-h-full"
               >
                 {currentPage === 'settings' && <SettingsPage onCookieStatusChange={setCookieStatus} />}
-                {currentPage === 'download' && <DownloadPage onDownloadStarted={() => setCurrentPage('history')} />}
                 {currentPage === 'history' && <HistoryPage />}
+                {currentPage === 'feishu' && <FeishuPage onNavigate={setCurrentPage} />}
               </motion.div>
             </AnimatePresence>
           </div>

@@ -62,7 +62,7 @@ export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = 
     if (posDistance !== '0' && !geoLocation) {
       getLocation()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [posDistance, geoLocation])
 
   // Common state
@@ -130,6 +130,7 @@ export default function DownloadPage({ onDownloadStarted }: DownloadPageProps = 
           saveOptions: {
             mode: saveMode,
             excelName: excelName || (taskType === 'search' ? searchQuery : '数据'),
+            download: saveMode !== 'excel' // 仅Excel模式不下载媒体文件，其他模式都下载
           },
           paths: config.paths,
           proxy: config.proxy.enabled ? config.proxy.url : undefined,
