@@ -34,7 +34,7 @@ interface TaskState {
 }
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('download')
+  const [currentPage, setCurrentPage] = useState<Page>('settings') // 默认显示设置页面
   const [cookieStatus, setCookieStatus] = useState<CookieStatus>('checking')
   const [appVersion, setAppVersion] = useState('')
   const [updateState, setUpdateState] = useState<UpdateState>({
@@ -43,6 +43,13 @@ export default function App() {
     progress: null,
     error: null,
   })
+  // 存储模式状态
+  const [storageMode, setStorageMode] = useState<'feishu' | 'download'>('feishu')
+  
+  // 更新存储模式的回调函数，用于从SettingsPage接收存储模式变化
+  const handleStorageModeChange = (mode: 'feishu' | 'download') => {
+    setStorageMode(mode)
+  }
 
   // Global task state
   const [taskState, setTaskState] = useState<TaskState>({
@@ -167,6 +174,17 @@ export default function App() {
   useEffect(() => {
     initTaskState()
 
+    // 加载存储模式配置
+    const loadStorageMode = async () => {
+      try {
+        const feishuConfig = await window.conveyor.feishu.getConfig()
+        setStorageMode(feishuConfig.storageMode || 'feishu')
+      } catch (error) {
+        console.error('Failed to load storage mode:', error)
+      }
+    }
+    loadStorageMode()
+
     // Subscribe to spider messages
     const unsubscribe = window.conveyor.spider.onMessage((message) => {
       handleSpiderMessage(message)
@@ -248,30 +266,37 @@ export default function App() {
     }
   }
 
+  // 固定菜单项目，总是显示所有菜单，但根据存储模式禁用不匹配的功能
   const menuItems = [
-    {
-      id: 'feishu' as Page,
-      label: '飞书',
-      icon: MessageSquare,
-      description: '飞书集成功能',
-    },
-    // {
-    //   id: 'download' as Page,
-    //   label: '下载',
-    //   icon: DownloadIcon,
-    //   description: '新建下载任务',
-    // },
-    {
-      id: 'history' as Page,
-      label: '历史',
-      icon: History,
-      description: '下载状态和记录',
-    },
+    // 总是显示设置页面，并将其放在第一位
     {
       id: 'settings' as Page,
       label: '设置',
       icon: Settings,
       description: 'Cookie 和配置',
+    },
+    // 飞书菜单 - 根据存储模式禁用
+    {
+      id: 'feishu' as Page,
+      label: '飞书',
+      icon: MessageSquare,
+      description: '飞书集成功能',
+      disabled: storageMode !== 'feishu',
+    },
+    // 下载菜单 - 根据存储模式禁用
+    {
+      id: 'download' as Page,
+      label: '下载',
+      icon: DownloadIcon,
+      description: '新建下载任务',
+      disabled: storageMode !== 'download',
+    },
+    // 历史菜单 - 总是可用
+    {
+      id: 'history' as Page,
+      label: '历史',
+      icon: History,
+      description: '下载状态和记录',
     },
   ]
 
@@ -347,29 +372,43 @@ export default function App() {
           {menuItems.map((item) => {
             const Icon = item.icon
             const isActive = currentPage === item.id
+            const isDisabled = item.disabled
             return (
               <button
                 key={item.id}
-                onClick={() => setCurrentPage(item.id)}
+                onClick={() => !isDisabled && setCurrentPage(item.id)}
+                disabled={isDisabled}
                 className={`
                   group relative w-full flex items-center gap-3 px-3 py-2 rounded-md transition-all duration-200
-                  ${
-                    isActive
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                  }
+                  ${isDisabled
+                    ? 'text-muted-foreground/50 bg-muted/30 cursor-not-allowed'
+                    : isActive
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}
                 `}
               >
                 <Icon
-                  className={`w-4 h-4 ${isActive ? 'text-primary-foreground' : 'text-muted-foreground group-hover:text-foreground'}`}
+                  className={`w-4 h-4 ${isDisabled
+                    ? 'text-muted-foreground/50'
+                    : isActive
+                    ? 'text-primary-foreground'
+                    : 'text-muted-foreground group-hover:text-foreground'}`}
                 />
 
                 <div className="relative flex-1 text-left">
-                  <div className={`text-sm font-medium ${isActive ? 'text-primary-foreground' : 'text-foreground'}`}>
+                  <div className={`text-sm font-medium ${isDisabled
+                    ? 'text-muted-foreground/50'
+                    : isActive
+                    ? 'text-primary-foreground'
+                    : 'text-foreground'}`}>
                     {item.label}
                   </div>
                   <div
-                    className={`text-[10px] line-clamp-1 ${isActive ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}
+                    className={`text-[10px] line-clamp-1 ${isDisabled
+                      ? 'text-muted-foreground/30'
+                      : isActive
+                      ? 'text-primary-foreground/80'
+                      : 'text-muted-foreground'}`}
                   >
                     {item.description}
                   </div>
@@ -420,19 +459,20 @@ export default function App() {
         <div className="flex-1 overflow-auto p-8 scroll-smooth">
           <div className="max-w-6xl mx-auto min-h-full flex flex-col justify-center">
             <AnimatePresence mode="wait">
-              <motion.div
-                key={currentPage}
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="min-h-full"
-              >
-                {currentPage === 'settings' && <SettingsPage onCookieStatusChange={setCookieStatus} />}
-                {currentPage === 'history' && <HistoryPage />}
-                {currentPage === 'feishu' && <FeishuPage onNavigate={setCurrentPage} />}
-              </motion.div>
-            </AnimatePresence>
+                  <motion.div
+                    key={currentPage}
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.15, ease: 'easeOut' }}
+                    className="min-h-full"
+                  >
+                    {currentPage === 'settings' && <SettingsPage onCookieStatusChange={setCookieStatus} onStorageModeChange={handleStorageModeChange} />}
+                    {currentPage === 'history' && <HistoryPage />}
+                    {currentPage === 'feishu' && <FeishuPage onNavigate={setCurrentPage} />}
+                    {currentPage === 'download' && <DownloadPage />}
+                  </motion.div>
+                </AnimatePresence>
           </div>
         </div>
       </div>

@@ -28,9 +28,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 
 interface SettingsPageProps {
   onCookieStatusChange: (status: 'valid' | 'invalid' | 'unknown' | 'checking') => void
+  onStorageModeChange?: (mode: 'feishu' | 'download') => void
 }
 
-export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps) {
+export default function SettingsPage({ onCookieStatusChange, onStorageModeChange }: SettingsPageProps) {
   const [cookie, setCookie] = useState('')
   const [mediaPath, setMediaPath] = useState('')
   const [excelPath, setExcelPath] = useState('')
@@ -49,8 +50,14 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
   // 飞书API配置
   const [feishuAppId, setFeishuAppId] = useState('')
   const [feishuAppSecret, setFeishuAppSecret] = useState('')
-  const [feishuReadInterval, setFeishuReadInterval] = useState('3')
   const [feishuMockEnabled, setFeishuMockEnabled] = useState(true)
+  
+  // 数据存储模式
+  const [storageMode, setStorageMode] = useState<'feishu' | 'download'>('feishu') // 默认飞书模式
+  
+  // API请求间隔配置
+  const [requestIntervalMin, setRequestIntervalMin] = useState('1')
+  const [requestIntervalMax, setRequestIntervalMax] = useState('3')
 
   useEffect(() => {
     loadConfig()
@@ -64,16 +71,38 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
       setExcelPath(config.paths.excel)
       setProxyEnabled(config.proxy.enabled)
       setProxyUrl(config.proxy.url)
+      // 加载请求间隔配置
+      setRequestIntervalMin((config.requestInterval?.min || 1).toString())
+      setRequestIntervalMax((config.requestInterval?.max || 3).toString())
       // Cookie 状态由 App.tsx 启动时验证，这里不重复验证
       
+      // 加载存储模式
+      const feishuConfig = await window.conveyor.feishu.getConfig()
+      setStorageMode(feishuConfig.storageMode || 'feishu')
+      if (onStorageModeChange) {
+        onStorageModeChange(feishuConfig.storageMode || 'feishu')
+      }
+      
       // 加载飞书API配置
-    const feishuConfig = await window.conveyor.feishu.getConfig()
-    setFeishuAppId(feishuConfig.appId || '')
-    setFeishuAppSecret(feishuConfig.appSecret || '')
-    setFeishuReadInterval((feishuConfig.readInterval || 3).toString())
-    setFeishuMockEnabled(feishuConfig.mockEnabled !== undefined ? feishuConfig.mockEnabled : true)
+      setFeishuAppId(feishuConfig.appId || '')
+      setFeishuAppSecret(feishuConfig.appSecret || '')
+      setFeishuMockEnabled(feishuConfig.mockEnabled !== undefined ? feishuConfig.mockEnabled : true)
     } catch (error) {
       console.error('Failed to load config:', error)
+    }
+  }
+  
+  // 保存存储模式配置
+  const handleSaveStorageMode = async (mode: 'feishu' | 'download') => {
+    try {
+      await window.conveyor.feishu.setConfig({
+        storageMode: mode
+      })
+      console.log('存储模式保存成功:', mode)
+      toast.success('存储模式保存成功!')
+    } catch (error) {
+      console.error('Failed to save storage mode:', error)
+      toast.error('存储模式保存失败!')
     }
   }
   
@@ -90,23 +119,16 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
           console.log('window.conveyor.feishu对象:', window.conveyor.feishu)
           console.log('setConfig方法是否存在:', typeof window.conveyor.feishu.setConfig === 'function')
           
-          // 验证读取间隔是否为有效数字
-          const interval = parseInt(feishuReadInterval)
-          if (isNaN(interval) || interval < 1 || interval > 60) {
-            toast.error('读取间隔秒必须是1-60之间的有效数字')
-            return
-          }
-          
           console.log('准备保存的配置:', {
             appId: feishuAppId,
             appSecret: feishuAppSecret,
-            readInterval: interval,
+            storageMode: storageMode,
             mockEnabled: feishuMockEnabled
           })
           const result = await window.conveyor.feishu.setConfig({
             appId: feishuAppId,
             appSecret: feishuAppSecret,
-            readInterval: interval,
+            storageMode: storageMode,
             mockEnabled: feishuMockEnabled
           })
           console.log('飞书配置保存成功，返回结果:', result)
@@ -128,6 +150,29 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
     } finally {
       setSaving(false)
       console.log('=== 保存飞书配置结束 ===')
+    }
+  }
+  
+  // 保存API请求间隔配置
+  const handleSaveRequestInterval = async () => {
+    setSaving(true)
+    try {
+      // 验证请求间隔是否为有效数字
+      const min = parseInt(requestIntervalMin)
+      const max = parseInt(requestIntervalMax)
+      
+      if (isNaN(min) || isNaN(max) || min < 1 || max > 60 || min > max) {
+        toast.error('请求间隔范围必须是1-60之间的有效数字，且最小值不大于最大值')
+        return
+      }
+      
+      await window.conveyor.spider.setRequestInterval({ min, max })
+      toast.success('API请求间隔配置保存成功!')
+    } catch (error) {
+      console.error('Failed to save request interval:', error)
+      toast.error('保存失败')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -408,73 +453,236 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
           </Card>
         </motion.div>
 
-        {/* Path Configuration */}
+        {/* 数据存储模式 */}
         <motion.div variants={itemVariants}>
           <Card className="border-border bg-card shadow-sm">
             <CardHeader>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center">
-                  <FolderOpen className="w-5 h-5 text-orange-600" />
+                <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Save className="w-5 h-5 text-purple-600" />
                 </div>
                 <div>
-                  <CardTitle>保存路径</CardTitle>
-                  <CardDescription>配置媒体文件和 Excel 数据的保存位置</CardDescription>
+                  <CardTitle>数据存储模式</CardTitle>
+                  <CardDescription>配置数据的保存方式</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="mediaPath">媒体文件保存路径</Label>
+              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
+                <div className="flex items-center gap-3">
+                  <Save className="w-5 h-5 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium text-sm">存储模式</p>
+                    <p className="text-xs text-muted-foreground">选择数据的保存方式</p>
+                  </div>
+                </div>
                 <div className="flex gap-2">
-                  <Input
-                    id="mediaPath"
-                    value={mediaPath}
-                    onChange={(e) => setMediaPath(e.target.value)}
-                    placeholder="/path/to/media"
-                    className="flex-1 bg-secondary/20 border-border focus:border-primary/50"
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => handleSelectDirectory('media')}
-                    className="shrink-0 hover:bg-secondary/80"
+                  <button
+                    onClick={async () => {
+                      console.log('切换到飞书模式');
+                      setStorageMode('feishu');
+                      if (onStorageModeChange) {
+                        onStorageModeChange('feishu');
+                      }
+                      // 保存存储模式
+                      await handleSaveStorageMode('feishu');
+                    }}
+                    className={`
+                      px-4 py-2 rounded-full text-sm font-medium transition-all
+                      ${storageMode === 'feishu' 
+                        ? 'bg-primary text-white' 
+                        : 'bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground'}
+                    `}
                   >
-                    <Folder className="w-4 h-4 mr-2" />
-                    浏览
-                  </Button>
+                    飞书
+                  </button>
+                  <button
+                    onClick={async () => {
+                      console.log('切换到下载模式');
+                      setStorageMode('download');
+                      if (onStorageModeChange) {
+                        onStorageModeChange('download');
+                      }
+                      // 保存存储模式
+                      await handleSaveStorageMode('download');
+                    }}
+                    className={`
+                      px-4 py-2 rounded-full text-sm font-medium transition-all
+                      ${storageMode === 'download' 
+                        ? 'bg-primary text-white' 
+                        : 'bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground'}
+                    `}
+                  >
+                    下载
+                  </button>
                 </div>
               </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="excelPath">Excel 文件保存路径</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="excelPath"
-                    value={excelPath}
-                    onChange={(e) => setExcelPath(e.target.value)}
-                    placeholder="/path/to/excel"
-                    className="flex-1 bg-secondary/20 border-border focus:border-primary/50"
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => handleSelectDirectory('excel')}
-                    className="shrink-0 hover:bg-secondary/80"
-                  >
-                    <Folder className="w-4 h-4 mr-2" />
-                    浏览
-                  </Button>
-                </div>
+              
+              {/* 调试信息 */}
+              <div className="text-xs text-muted-foreground">
+                当前存储模式: {storageMode}
               </div>
-
-              <Separator className="bg-border" />
-
-              <Button onClick={handleSavePaths} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
-                <Save className="w-4 h-4 mr-2" />
-                {saving ? '保存中...' : '保存路径配置'}
-              </Button>
+              
+              <p className="text-xs text-muted-foreground">
+                {storageMode === 'feishu' 
+                  ? '数据将保存到飞书多维表格' 
+                  : '数据将下载到本地文件系统'}
+              </p>
             </CardContent>
           </Card>
         </motion.div>
+        
+        {/* 保存路径配置 - 仅在下载模式下显示 */}
+        {storageMode === 'download' && (
+          <div>
+            <Card className="border-border bg-card shadow-sm">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                    <FolderOpen className="w-5 h-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <CardTitle>保存路径</CardTitle>
+                    <CardDescription>配置媒体文件和 Excel 数据的保存位置</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="mediaPath">媒体文件保存路径</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="mediaPath"
+                      value={mediaPath}
+                      onChange={(e) => setMediaPath(e.target.value)}
+                      placeholder="/path/to/media"
+                      className="flex-1 bg-secondary/20 border-border focus:border-primary/50"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => handleSelectDirectory('media')}
+                      className="shrink-0 hover:bg-secondary/80"
+                    >
+                      <Folder className="w-4 h-4 mr-2" />
+                      浏览
+                    </Button>
+                  </div>
+                </div>
 
+                <div className="space-y-2">
+                  <Label htmlFor="excelPath">Excel 文件保存路径</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="excelPath"
+                      value={excelPath}
+                      onChange={(e) => setExcelPath(e.target.value)}
+                      placeholder="/path/to/excel"
+                      className="flex-1 bg-secondary/20 border-border focus:border-primary/50"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => handleSelectDirectory('excel')}
+                      className="shrink-0 hover:bg-secondary/80"
+                    >
+                      <Folder className="w-4 h-4 mr-2" />
+                      浏览
+                    </Button>
+                  </div>
+                </div>
+
+                <Separator className="bg-border" />
+
+                <Button onClick={handleSavePaths} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
+                  <Save className="w-4 h-4 mr-2" />
+                  {saving ? '保存中...' : '保存路径配置'}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* 飞书API配置 - 仅在飞书模式下显示 */}
+        {storageMode === 'feishu' && (
+          <div>
+            <Card className="border-border bg-card shadow-sm">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
+                    <Globe className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div>
+                    <CardTitle>飞书API配置</CardTitle>
+                    <CardDescription>配置飞书开放平台API密钥和读取设置</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="feishuAppId">飞书App ID</Label>
+                  <Input
+                    id="feishuAppId"
+                    placeholder="cli_slkdjoiwjeoiwj"
+                    value={feishuAppId}
+                    onChange={(e) => setFeishuAppId(e.target.value)}
+                    className="bg-secondary/20 border-border focus:border-primary/50"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="feishuAppSecret">飞书App Secret</Label>
+                  <Input
+                    id="feishuAppSecret"
+                    type="password"
+                    placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    value={feishuAppSecret}
+                    onChange={(e) => setFeishuAppSecret(e.target.value)}
+                    className="bg-secondary/20 border-border focus:border-primary/50"
+                  />
+                </div>
+                
+
+                
+                {/* <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
+                  <div className="flex items-center gap-3">
+                    <Key className="w-5 h-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium text-sm">启用Mock数据</p>
+                      <p className="text-xs text-muted-foreground">使用模拟数据而不是真实请求飞书API</p>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={feishuMockEnabled}
+                      onChange={(e) => setFeishuMockEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-secondary peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                  </label>
+                </div> */}
+                
+                <Alert className="bg-secondary/20 border-border">
+                  <Info className="h-4 w-4 text-primary" />
+                  <AlertDescription className="text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">💡 如何获取飞书API密钥:</p>
+                    <ol className="list-decimal list-inside space-y-1 ml-2 opacity-80">
+                      <li>访问 <a href="https://open.feishu.cn" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">飞书开放平台</a></li>
+                      <li>创建企业自建应用</li>
+                      <li>在应用管理中获取App ID和App Secret</li>
+                      <li>为应用添加"文档阅读"等相关权限</li>
+                    </ol>
+                  </AlertDescription>
+                </Alert>
+                
+                <Button onClick={handleSaveFeishuConfig} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
+                  <Save className="w-4 h-4 mr-2" />
+                  {saving ? '保存中...' : '保存飞书API配置'}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+        
         {/* Proxy Configuration */}
         <motion.div variants={itemVariants}>
           <Card className="border-border bg-card shadow-sm">
@@ -534,101 +742,58 @@ export default function SettingsPage({ onCookieStatusChange }: SettingsPageProps
           </Card>
         </motion.div>
 
-
-
-        {/* 飞书API配置 */}
+        {/* API Request Interval Configuration */}
         <motion.div variants={itemVariants}>
           <Card className="border-border bg-card shadow-sm">
             <CardHeader>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center">
-                  <Globe className="w-5 h-5 text-green-600" />
+                <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Loader2 className="w-5 h-5 text-cyan-600" />
                 </div>
                 <div>
-                  <CardTitle>飞书API配置</CardTitle>
-                  <CardDescription>配置飞书开放平台API密钥和读取设置</CardDescription>
+                  <CardTitle>API请求间隔</CardTitle>
+                  <CardDescription>配置小红书接口请求的时间间隔，用于反爬</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="feishuAppId">飞书App ID</Label>
-                <Input
-                  id="feishuAppId"
-                  placeholder="cli_slkdjoiwjeoiwj"
-                  value={feishuAppId}
-                  onChange={(e) => setFeishuAppId(e.target.value)}
-                  className="bg-secondary/20 border-border focus:border-primary/50"
-                />
-              </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="feishuAppSecret">飞书App Secret</Label>
-                <Input
-                  id="feishuAppSecret"
-                  type="password"
-                  placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                  value={feishuAppSecret}
-                  onChange={(e) => setFeishuAppSecret(e.target.value)}
-                  className="bg-secondary/20 border-border focus:border-primary/50"
-                />
-              </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="feishuReadInterval">读取间隔秒</Label>
-                <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="requestIntervalMin">最小间隔(秒)</Label>
                   <Input
-                    id="feishuReadInterval"
+                    id="requestIntervalMin"
+                    type="number"
+                    placeholder="1"
+                    min="1"
+                    max="60"
+                    value={requestIntervalMin}
+                    onChange={(e) => setRequestIntervalMin(e.target.value)}
+                    className="bg-secondary/20 border-border focus:border-primary/50"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="requestIntervalMax">最大间隔(秒)</Label>
+                  <Input
+                    id="requestIntervalMax"
                     type="number"
                     placeholder="3"
                     min="1"
                     max="60"
-                    value={feishuReadInterval}
-                    onChange={(e) => setFeishuReadInterval(e.target.value)}
+                    value={requestIntervalMax}
+                    onChange={(e) => setRequestIntervalMax(e.target.value)}
                     className="bg-secondary/20 border-border focus:border-primary/50"
                   />
-                  <div className="flex items-center text-muted-foreground text-sm">秒</div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  读取博主笔记列表时的间隔时间，默认3秒，范围1-60秒
-                </p>
               </div>
-              
-              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
-                <div className="flex items-center gap-3">
-                  <Key className="w-5 h-5 text-muted-foreground" />
-                  <div>
-                    <p className="font-medium text-sm">启用Mock数据</p>
-                    <p className="text-xs text-muted-foreground">使用模拟数据而不是真实请求飞书API</p>
-                  </div>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={feishuMockEnabled}
-                    onChange={(e) => setFeishuMockEnabled(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-secondary peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                </label>
-              </div>
-              
-              <Alert className="bg-secondary/20 border-border">
-                <Info className="h-4 w-4 text-primary" />
-                <AlertDescription className="text-xs text-muted-foreground">
-                  <p className="font-medium text-foreground">💡 如何获取飞书API密钥:</p>
-                  <ol className="list-decimal list-inside space-y-1 ml-2 opacity-80">
-                    <li>访问 <a href="https://open.feishu.cn" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">飞书开放平台</a></li>
-                    <li>创建企业自建应用</li>
-                    <li>在应用管理中获取App ID和App Secret</li>
-                    <li>为应用添加"文档阅读"等相关权限</li>
-                  </ol>
-                </AlertDescription>
-              </Alert>
-              
-              <Button onClick={handleSaveFeishuConfig} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
+              <p className="text-xs text-muted-foreground">
+                每次请求将在配置的时间范围内随机选择间隔，用于避免反爬机制，范围1-60秒
+              </p>
+
+              <Separator className="bg-border" />
+
+              <Button onClick={handleSaveRequestInterval} disabled={saving} className="w-full bg-primary hover:bg-primary/90">
                 <Save className="w-4 h-4 mr-2" />
-                {saving ? '保存中...' : '保存飞书API配置'}
+                {saving ? '保存中...' : '保存请求间隔配置'}
               </Button>
             </CardContent>
           </Card>
