@@ -186,6 +186,7 @@ class QueueManager {
           saveOptions: taskConfig.config?.saveOptions,
           paths: taskConfig.config?.paths,
           proxy: taskConfig.config?.proxy,
+          requestInterval: taskConfig.config?.requestInterval,
         }
         pythonBridge.start(spiderConfig as any, onMessage)
       } catch (error: unknown) {

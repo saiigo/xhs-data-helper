@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { Button } from '@/app/components/ui/button'
 import { Input } from '@/app/components/ui/input'
 import { Label } from '@/app/components/ui/label'
@@ -11,6 +11,28 @@ interface FeishuData {
   id: string
   bloggerId: string
   shareUrl: string
+}
+
+interface BloggerUserInfo {
+  nickname?: string
+  avatar?: string
+  uniqueId?: string
+  gender?: string
+  ipLocation?: string
+  desc?: string
+  followingCount?: number
+  followerCount?: number
+  likedCount?: number
+  collectedCount?: number
+  tags?: string[]
+}
+
+interface ProcessedBloggerData {
+  bloggerId: string
+  shareUrl: string
+  notes: any[]
+  user?: BloggerUserInfo
+  tags?: string[]
 }
 
 interface FeishuPageProps {
@@ -26,6 +48,11 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
   const [error, setError] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
   
+  // 页面加载时检查飞书配置
+  React.useEffect(() => {
+    checkFeishuConfig()
+  }, [])
+  
   // 工作进度状态
   const [isWorking, setIsWorking] = useState(false)
   const [currentBlogger, setCurrentBlogger] = useState<number>(0)
@@ -40,6 +67,74 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
     message: string
     filePath?: string
   } | null>(null)
+
+  const [localExcelPath, setLocalExcelPath] = useState('')
+  const [processedData, setProcessedData] = useState<ProcessedBloggerData[]>([])
+  const [isManualWriting, setIsManualWriting] = useState(false)
+
+  const parseTagList = (value: any): string[] => {
+    if (!value) return []
+    if (Array.isArray(value)) {
+      return value
+        .map(tag => {
+          if (typeof tag === 'string') {
+            return tag.trim()
+          }
+          if (tag && typeof tag === 'object') {
+            if (typeof tag.name === 'string') {
+              return tag.name.trim()
+            }
+            return String(tag).trim()
+          }
+          return String(tag || '').trim()
+        })
+        .filter(tag => tag.length > 0)
+    }
+    return String(value)
+      .split(/[，,]/)
+      .map(tag => tag.trim())
+      .filter(tag => tag.length > 0)
+  }
+
+  const normalizeUserInfo = (userData?: any, notes?: any[]): BloggerUserInfo | undefined => {
+    const toNumber = (val: any): number | undefined => {
+      if (val === undefined || val === null || val === '') return undefined
+      const num = Number(val)
+      return Number.isNaN(num) ? undefined : num
+    }
+
+    if (userData) {
+      return {
+        nickname: userData.nickname || userData.username || '',
+        avatar: userData.avatar || userData.avatar_url || '',
+        uniqueId: userData.red_id || userData.uniqueId || '',
+        gender: userData.gender || '',
+        ipLocation: userData.ip_location || userData.ipLocation || '',
+        desc: userData.desc || '',
+        followingCount: toNumber(userData.follows ?? userData.followingCount) ?? 0,
+        followerCount: toNumber(userData.fans ?? userData.followerCount) ?? 0,
+        likedCount: toNumber(userData.interaction ?? userData.likedCount) ?? 0,
+        collectedCount: toNumber(userData.collectedCount ?? userData.interaction ?? userData.likedCount) ?? 0,
+        tags: parseTagList(userData.tags)
+      }
+    }
+
+    if (notes && notes.length > 0) {
+      const sample = notes.find(note => note?.nickname || note?.author_name || note?.avatar) || notes[0]
+      if (!sample) return undefined
+      return {
+        nickname: sample.nickname || sample.author_name || '',
+        avatar: sample.avatar || sample.author_avatar || '',
+        uniqueId: sample.red_id || '',
+        gender: sample.gender || '',
+        ipLocation: sample.ip_location || '',
+        desc: '',
+        tags: parseTagList(sample.tags)
+      }
+    }
+
+    return undefined
+  }
   
   // 日志状态
   const [logs, setLogs] = useState<string[]>([])
@@ -50,9 +145,32 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       const config = await window.conveyor.feishu.getConfig()
       // 只需要App ID和App Secret即可，文档Token和Sheet ID是可选的
       setIsConfigured(!!config.appId && !!config.appSecret)
+      
+      // 从配置中读取保存的飞书链接
+      if (config.readTableUrl) {
+        setReadTableUrl(config.readTableUrl)
+      }
+      if (config.writeTableUrl) {
+        setWriteTableUrl(config.writeTableUrl)
+      }
     } catch (err) {
       console.error('检查飞书配置失败:', err)
       setIsConfigured(false)
+    }
+  }
+  
+  // 保存飞书链接到配置
+  const saveFeishuUrlsToConfig = async () => {
+    try {
+      const config = await window.conveyor.feishu.getConfig()
+      // 更新配置，保存飞书链接
+      await window.conveyor.feishu.setConfig({
+        ...config,
+        readTableUrl,
+        writeTableUrl
+      })
+    } catch (err) {
+      console.error('保存飞书链接失败:', err)
     }
   }
 
@@ -67,6 +185,9 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
     setError('')
     
     try {
+      // 保存飞书链接到配置
+      await saveFeishuUrlsToConfig()
+      
       // 调用主进程的飞书API读取数据
       const result = await window.conveyor.feishu.fetchTableData(readTableUrl)
       
@@ -99,6 +220,9 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       toast.error('请填写写入飞书多维表格链接')
       return
     }
+    
+    // 保存飞书链接到配置
+    await saveFeishuUrlsToConfig()
 
     // 重置状态
     setIsLoading(true)
@@ -110,6 +234,8 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
     setCurrentNote(0)
     setTotalNotes(0)
     setProgress(0)
+    setLocalExcelPath('')
+    setProcessedData([])
     
     // 读取写入表格的现有数据，用于去重
     let existingBloggers: string[] = []
@@ -133,7 +259,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       toast.success('开始处理博主数据...')
       
       // 遍历所有博主数据，读取笔记列表和详情信息，跳过已处理的博主
-      const allBloggerData = []
+      const allBloggerData: ProcessedBloggerData[] = []
       // 过滤掉已经存在的博主，进行去重
       const filteredData = data.filter(blogger => !existingBloggers.includes(blogger.bloggerId))
       const totalBloggersCount = filteredData.length
@@ -157,49 +283,36 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
         const blogger = filteredData[i]
         setCurrentBlogger(i + 1)
         setProgress(Math.round((i / totalBloggersCount) * 100))
+        setTotalNotes(0)
+        setCurrentNote(0)
         
         console.log(`=== 开始处理博主 ${blogger.bloggerId} (${i + 1}/${totalBloggersCount}) ===`)
         
         // 1. 调用API读取博主笔记列表
         console.log(`开始读取博主 ${blogger.bloggerId} 的笔记列表...`)
-        const notesResult = await window.conveyor.feishu.fetchBloggerNotes(blogger.bloggerId)
+        const notesResult = await window.conveyor.feishu.fetchBloggerNotes(blogger.bloggerId, blogger.shareUrl)
         
         if (notesResult.success) {
           console.log(`成功读取博主 ${blogger.bloggerId} 的笔记列表，共 ${notesResult.data?.length || 0} 条笔记`)
+          console.log('直接使用爬虫返回的笔记详情数据，无需额外请求')
           
           const notes = notesResult.data || []
           setTotalNotes(notes.length)
-          setCurrentNote(0)
-          
-          // 2. 遍历笔记列表，读取每条笔记的详情信息
-          const bloggerNotes = []
-          for (let j = 0; j < notes.length; j++) {
-            const note = notes[j]
-            setCurrentNote(j + 1)
-            setProgress(Math.round(((i * notes.length + j + 1) / (totalBloggersCount * notes.length)) * 100))
-            
-            console.log(`开始读取笔记 ${note.id} 的详情信息... (${j + 1}/${notes.length})`)
-            const noteDetailResult = await window.conveyor.feishu.fetchNoteDetail(note.id)
-            
-            if (noteDetailResult.success) {
-              console.log(`成功读取笔记 ${note.id} 的详情信息`)
-              bloggerNotes.push(noteDetailResult.data)
-            } else {
-              console.error(`读取笔记 ${note.id} 的详情信息失败: ${noteDetailResult.error}`)
-            }
-            
-            // 等待短暂的间隔时间
-            await new Promise(resolve => setTimeout(resolve, 1000))
-          }
+          setCurrentNote(notes.length)
+          setProgress(Math.round(((i + 1) / totalBloggersCount) * 100))
+
+          const userProfile = normalizeUserInfo(notesResult.user, notes)
           
           // 添加博主数据到结果数组
           allBloggerData.push({
             bloggerId: blogger.bloggerId,
             shareUrl: blogger.shareUrl,
-            notes: bloggerNotes
+            notes,
+            user: userProfile,
+            tags: userProfile?.tags || []
           })
           
-          toast.success(`成功处理博主 ${blogger.bloggerId}，共读取 ${bloggerNotes.length} 条笔记详情`)
+          toast.success(`成功处理博主 ${blogger.bloggerId}，共读取 ${notes.length} 条笔记详情`)
         } else {
           console.error(`读取博主 ${blogger.bloggerId} 的笔记列表失败: ${notesResult.error}`)
           toast.error(`处理博主 ${blogger.bloggerId} 失败: ${notesResult.error}`)
@@ -219,6 +332,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       setProgress(100)
       console.log('=== 所有博主数据处理完成 ===')
       console.log('处理结果:', allBloggerData)
+      setProcessedData(allBloggerData)
       
       // 3. 生成Excel表格，每个博主一个sheet
       console.log('开始生成Excel表格...')
@@ -229,6 +343,9 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
         console.log('Excel表格生成成功:', excelResult.filePath)
         toast.success(`Excel表格生成成功，保存路径: ${excelResult.filePath}`)
         excelMessage = `，生成Excel表格成功`
+        if (excelResult.filePath) {
+          setLocalExcelPath(excelResult.filePath)
+        }
       } else {
         console.error('Excel表格生成失败:', excelResult.error)
         toast.error(`Excel表格生成失败: ${excelResult.error}`)
@@ -281,6 +398,59 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       setIsLoading(false)
       setIsWorking(false)
       setProgress(100)
+    }
+  }
+
+  const handleManualWrite = async () => {
+    if (!writeTableUrl) {
+      toast.error('请先填写写入飞书多维表格链接')
+      return
+    }
+
+    const manualPath = localExcelPath.trim()
+
+    if (!manualPath && processedData.length === 0) {
+      toast.error('暂无可写入的数据，请先处理一次或填写Excel路径')
+      return
+    }
+
+    setIsManualWriting(true)
+    try {
+      let dataToWrite = processedData
+
+      if (manualPath) {
+        console.log('从本地Excel读取数据，准备手动写入飞书...')
+        const parsedResult = await window.conveyor.feishu.loadExcelSummary(manualPath)
+
+        if (!parsedResult.success || !parsedResult.data || parsedResult.data.length === 0) {
+          const errorMsg = parsedResult.error || '未能从Excel解析到数据'
+          toast.error(errorMsg)
+          return
+        }
+
+        dataToWrite = parsedResult.data as ProcessedBloggerData[]
+        setProcessedData(parsedResult.data as ProcessedBloggerData[])
+      }
+
+      if (dataToWrite.length === 0) {
+        toast.error('暂无可写入的数据，请先处理数据')
+        return
+      }
+
+      console.log('手动写入飞书多维表格...')
+      const writeResult = await window.conveyor.feishu.writeTableData(writeTableUrl, dataToWrite)
+
+      if (writeResult.success) {
+        toast.success('数据已手动写入飞书多维表格')
+      } else {
+        toast.error(`手动写入失败: ${writeResult.error}`)
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : '手动写入飞书表格失败'
+      console.error('手动写入飞书表格失败:', errorMsg)
+      toast.error(errorMsg)
+    } finally {
+      setIsManualWriting(false)
     }
   }
 
@@ -392,6 +562,30 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
             />
             <p className="text-xs text-muted-foreground">
               处理完成后的数据将写入此表格（可选）
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="localExcelPath">手动同步文件路径</Label>
+            <div className="flex gap-2">
+              <Input
+                id="localExcelPath"
+                value={localExcelPath}
+                onChange={(e) => setLocalExcelPath(e.target.value)}
+                className="flex-1"
+                placeholder="/Users/.../feishu-notes.xlsx"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleManualWrite}
+                disabled={isManualWriting || (!localExcelPath.trim() && processedData.length === 0)}
+              >
+                {isManualWriting ? <Loader2 className="w-4 h-4 animate-spin" /> : '手动写入飞书'}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              开始工作完成后会自动填入最新的Excel路径，也可手动输入已有地址来再次同步到飞书
             </p>
           </div>
 

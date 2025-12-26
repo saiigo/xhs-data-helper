@@ -1,7 +1,5 @@
-import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { v4 as uuidv4 } from 'uuid'
 
 interface FeishuConfig {
   appId: string
@@ -9,6 +7,8 @@ interface FeishuConfig {
   readInterval: number
   updatedAt: string
   mockEnabled: boolean
+  readTableUrl?: string // 读取表格的链接
+  writeTableUrl?: string // 写入表格的链接
 }
 
 export class FeishuConfigManager {
@@ -19,11 +19,15 @@ export class FeishuConfigManager {
     readInterval: 3,
     updatedAt: new Date().toISOString(),
     mockEnabled: true,
+    readTableUrl: '',
+    writeTableUrl: '',
   }
 
   constructor() {
-    const userDataPath = app.getPath('userData')
-    this.configPath = path.join(userDataPath, 'feishu-config.json')
+    // Use project-specific config directory instead of userData
+    const projectRoot = process.cwd()
+    const configDir = path.join(projectRoot, 'tmp-config')
+    this.configPath = path.join(configDir, 'feishu-config.json')
     this.ensureConfigFile()
   }
 

@@ -23,6 +23,10 @@ export interface SpiderConfig {
     excel: string
   }
   proxy?: string
+  requestInterval?: {
+    min: number
+    max: number
+  }
 }
 
 export interface PythonMessage {
@@ -43,6 +47,7 @@ export interface PythonMessage {
   valid?: boolean
   api_success?: boolean
   api_message?: string
+  notes?: any[]
   userInfo?: {
     userId: string
     nickname: string
@@ -59,6 +64,7 @@ export class PythonBridge {
   private currentTaskId: number | null = null
   private taskStatusSet: boolean = false // Track if status was set by done message
   private mainWindow: BrowserWindow | null = null
+  private stdoutBuffer: string = ''
 
   constructor() {}
 
@@ -171,6 +177,7 @@ export class PythonBridge {
     }
 
     this.messageHandler = onMessage
+    this.stdoutBuffer = ''
 
     // Reset status flag for new task
     this.taskStatusSet = false
@@ -203,60 +210,57 @@ export class PythonBridge {
       env,
     })
 
-    // Handle stdout (JSON Lines)
-    this.process.stdout?.on('data', (data) => {
-      const rawOutput = data.toString()
+    const handleMessage = (line: string) => {
+      if (!line.trim()) {
+        return
+      }
 
-      // Log all raw output to console for debugging
-      console.log('[Python stdout]:', rawOutput)
+      try {
+        const message: PythonMessage = JSON.parse(line)
 
-      const lines = rawOutput.split('\n')
-      lines.forEach((line: string) => {
-        if (line.trim()) {
-          try {
-            const message: PythonMessage = JSON.parse(line)
+        if (this.currentTaskId) {
+          databaseManager.addLog(this.currentTaskId, message)
 
-            // Save to database
-            if (this.currentTaskId) {
-              databaseManager.addLog(this.currentTaskId, message)
+          if (message.type === 'done') {
+            const count = message.count || 0
+            const apiSuccess = message.api_success ?? true
+            const apiMessage = message.api_message || ''
 
-              // Handle done message to determine final status
-              if (message.type === 'done') {
-                const count = message.count || 0
-                const apiSuccess = message.api_success ?? true
-                const apiMessage = message.api_message || ''
+            let status: 'completed' | 'warning' | 'failed' = 'completed'
+            let errorMsg: string | undefined
 
-                // Determine task status based on result count and API response
-                let status: 'completed' | 'warning' | 'failed' = 'completed'
-                let errorMsg: string | undefined
+            if (!apiSuccess || apiMessage.includes('账号异常') || apiMessage.includes('检测到账号异常') || apiMessage.includes('code=-1')) {
+              status = 'failed'
+              errorMsg = apiMessage || '账号异常，请重新登录'
 
-                // Check for account anomaly
-                if (!apiSuccess || apiMessage.includes('账号异常') || apiMessage.includes('检测到账号异常') || apiMessage.includes('code=-1')) {
-                  status = 'failed'
-                  errorMsg = apiMessage || '账号异常，请重新登录'
-
-                  // Trigger cookie validation
-                  this.validateCookieAndNotify().catch(err => {
-                    console.error('Failed to validate cookie:', err)
-                  })
-                } else if (count === 0) {
-                  // No data but no error - mark as warning
-                  status = 'warning'
-                  errorMsg = '任务完成但未获取到任何数据'
-                }
-
-                databaseManager.updateTask(this.currentTaskId, status, errorMsg, count)
-                this.taskStatusSet = true // Mark that status has been set
-              }
+              this.validateCookieAndNotify().catch(err => {
+                console.error('Failed to validate cookie:', err)
+              })
+            } else if (count === 0) {
+              status = 'warning'
+              errorMsg = '任务完成但未获取到任何数据'
             }
 
-            this.messageHandler?.(message)
-          } catch (error) {
-            // Not a JSON line, log as raw output
-            console.log('[Python non-JSON]:', line)
+            databaseManager.updateTask(this.currentTaskId, status, errorMsg, count)
+            this.taskStatusSet = true
           }
         }
-      })
+
+        this.messageHandler?.(message)
+      } catch (error) {
+        console.log('[Python non-JSON]:', line)
+      }
+    }
+
+    // Handle stdout (JSON Lines)
+    this.process.stdout?.on('data', (data) => {
+      const chunk = data.toString()
+      console.log('[Python stdout]:', chunk)
+
+      this.stdoutBuffer += chunk
+      const lines = this.stdoutBuffer.split('\n')
+      this.stdoutBuffer = lines.pop() || ''
+      lines.forEach(handleMessage)
     })
 
     // Handle stderr
@@ -278,6 +282,11 @@ export class PythonBridge {
 
     // Handle process exit
     this.process.on('close', (code) => {
+      if (this.stdoutBuffer.trim()) {
+        handleMessage(this.stdoutBuffer)
+        this.stdoutBuffer = ''
+      }
+
       // Update task status in database only if not already set by done message
       if (this.currentTaskId && !this.taskStatusSet) {
         if (code === 0) {

@@ -67,6 +67,15 @@ export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
     return { success: true }
   })
 
+  ipcMain.handle('spider:config:setRequestInterval', async (_event, interval: any) => {
+    configManager.setRequestInterval(interval)
+    return { success: true }
+  })
+
+  ipcMain.handle('spider:config:getRequestInterval', async () => {
+    return configManager.getRequestInterval()
+  })
+
   // File dialogs
   ipcMain.handle('dialog:selectDirectory', async () => {
     const result = await dialog.showOpenDialog({
@@ -146,11 +155,16 @@ export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
       }
 
       const workbook = XLSX.readFile(filePath)
-      const sheetName = workbook.SheetNames[0]
-      const worksheet = workbook.Sheets[sheetName]
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+      
+      // 读取所有sheet的数据
+      const allSheetsData = workbook.SheetNames.map(sheetName => {
+        const worksheet = workbook.Sheets[sheetName]
+        // 移除header: 1选项，让XLSX库自动将第一行作为列名
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' })
+        return { sheetName, data: jsonData }
+      })
 
-      return { success: true, data: jsonData, sheetName }
+      return { success: true, data: allSheetsData }
     } catch (error: any) {
       return { success: false, error: error.message }
     }

@@ -31,8 +31,8 @@ export class FeishuApi {
   /**
    * 读取博主笔记列表
    */
-  fetchBloggerNotes = async (bloggerId: string): Promise<any> => {
-    return await this.api.ipcRenderer.invoke('feishu:fetchBloggerNotes', bloggerId)
+  fetchBloggerNotes = async (bloggerId: string, shareUrl?: string): Promise<any> => {
+    return await this.api.ipcRenderer.invoke('feishu:fetchBloggerNotes', bloggerId, shareUrl)
   }
 
   /**
@@ -49,6 +49,8 @@ export class FeishuApi {
     bloggerId: string
     shareUrl: string
     notes: Array<any>
+    user?: any
+    tags?: Array<string>
   }>): Promise<any> => {
     return await this.api.ipcRenderer.invoke('feishu:generateExcel', bloggerData)
   }
@@ -60,7 +62,16 @@ export class FeishuApi {
     bloggerId: string
     shareUrl: string
     notes: Array<any>
+    user?: any
+    tags?: Array<string>
   }>): Promise<any> => {
     return await this.api.ipcRenderer.invoke('feishu:writeTableData', tableUrl, bloggerData)
+  }
+
+  /**
+   * 从本地Excel文件解析博主汇总数据
+   */
+  loadExcelSummary = async (filePath: string): Promise<{ success: boolean; data?: Array<{ bloggerId: string; shareUrl: string; notes: Array<any>; user?: any; tags?: Array<string> }>; error?: string }> => {
+    return await this.api.ipcRenderer.invoke('feishu:loadExcelSummary', filePath)
   }
 }

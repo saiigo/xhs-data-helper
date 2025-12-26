@@ -2,7 +2,6 @@
  * Configuration Manager
  * Handles app configuration persistence
  */
-import { app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -18,6 +17,10 @@ interface AppConfig {
     enabled: boolean
     url: string
   }
+  requestInterval?: {
+    min: number
+    max: number
+  }
   lastTask?: {
     type: string
     params: Record<string, any>
@@ -27,12 +30,16 @@ interface AppConfig {
 const DEFAULT_CONFIG: AppConfig = {
   cookie: '',
   paths: {
-    media: path.join(app.getPath('home'), 'Spider_XHS', 'media_datas'),
-    excel: path.join(app.getPath('home'), 'Spider_XHS', 'excel_datas'),
+    media: path.join(process.cwd(), 'tmp-config', 'media_datas'),
+    excel: path.join(process.cwd(), 'tmp-config', 'excel_datas'),
   },
   proxy: {
     enabled: false,
     url: 'http://127.0.0.1:7890',
+  },
+  requestInterval: {
+    min: 1,
+    max: 3,
   },
 }
 
@@ -42,8 +49,10 @@ class ConfigManager {
   private encryptionKey: Buffer
 
   constructor() {
-    // Config file location
-    this.configPath = path.join(app.getPath('userData'), 'config.json')
+    // Use project-specific config directory instead of userData
+    const projectRoot = process.cwd()
+    const configDir = path.join(projectRoot, 'tmp-config')
+    this.configPath = path.join(configDir, 'spider-config.json')
 
     // Simple encryption key (in production, should use keytar or similar)
     // AES-256 requires exactly 32 bytes - use SHA-256 hash to ensure correct length
@@ -205,6 +214,21 @@ class ConfigManager {
    */
   getLastTask(): AppConfig['lastTask'] | undefined {
     return this.config.lastTask
+  }
+
+  /**
+   * Set request interval
+   */
+  setRequestInterval(interval: AppConfig['requestInterval']): void {
+    this.config.requestInterval = interval
+    this.save()
+  }
+
+  /**
+   * Get request interval
+   */
+  getRequestInterval(): AppConfig['requestInterval'] {
+    return this.config.requestInterval || DEFAULT_CONFIG.requestInterval
   }
 
   /**

@@ -70,6 +70,14 @@ export class SpiderApi {
     return this.electronAPI.ipcRenderer.invoke('spider:config:setProxy', proxy)
   }
 
+  setRequestInterval = (interval: { min: number; max: number }): Promise<{ success: boolean }> => {
+    return this.electronAPI.ipcRenderer.invoke('spider:config:setRequestInterval', interval)
+  }
+
+  getRequestInterval = (): Promise<{ min: number; max: number }> => {
+    return this.electronAPI.ipcRenderer.invoke('spider:config:getRequestInterval')
+  }
+
   setLastTask = (type: string, params: any): Promise<{ success: boolean }> => {
     return this.electronAPI.ipcRenderer.invoke('spider:config:setLastTask', type, params)
   }

@@ -3,7 +3,6 @@
  * Handles task and log persistence using SQLite
  */
 import Database from 'better-sqlite3'
-import { app } from 'electron'
 import path from 'path'
 import { PythonMessage } from './python-bridge'
 
@@ -45,7 +44,10 @@ class DatabaseManager {
   private db: Database.Database
 
   constructor() {
-    const dbPath = path.join(app.getPath('userData'), 'spider.db')
+    // Use project-specific config directory instead of userData
+    const projectRoot = process.cwd()
+    const configDir = path.join(projectRoot, 'tmp-config')
+    const dbPath = path.join(configDir, 'spider.db')
 
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
