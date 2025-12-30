@@ -149,7 +149,7 @@ class ConfigManager {
   setCookie(cookie: string, validUntil?: number): void {
     // Trim whitespace and newlines from cookie
     this.config.cookie = this.encrypt(cookie.trim())
-    if (validUntil) {
+    if (validUntil !== undefined) {
       this.config.cookieValidUntil = validUntil
     }
     this.save()

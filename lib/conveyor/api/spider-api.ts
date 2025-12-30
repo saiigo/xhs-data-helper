@@ -62,6 +62,10 @@ export class SpiderApi {
     return this.electronAPI.ipcRenderer.invoke('spider:webview:login')
   }
 
+  clearLoginSession = (): Promise<{ success: boolean; error?: string }> => {
+    return this.electronAPI.ipcRenderer.invoke('spider:webview:clearSession')
+  }
+
   setPaths = (paths: { media?: string; excel?: string }): Promise<{ success: boolean }> => {
     return this.electronAPI.ipcRenderer.invoke('spider:config:setPaths', paths)
   }

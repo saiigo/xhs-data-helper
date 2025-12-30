@@ -299,6 +299,22 @@ export default function SettingsPage({ onCookieStatusChange, onStorageModeChange
     document.documentElement.classList.toggle('dark', newTheme === 'dark')
   }
 
+  const handleLogout = async () => {
+    try {
+      // 清除Cookie
+      await window.conveyor.spider.setCookie('', 0)
+      // 重置所有与登录相关的状态
+      setCookie('')
+      setIsCookieValid(null)
+      setUserNickname(null)
+      onCookieStatusChange('unknown')
+      toast.success('已退出登录')
+    } catch (error) {
+      console.error('Failed to logout:', error)
+      toast.error('退出登录失败')
+    }
+  }
+
   const containerVariants: any = {
     hidden: { opacity: 0 },
     visible: {
@@ -449,6 +465,21 @@ export default function SettingsPage({ onCookieStatusChange, onStorageModeChange
                   </Button>
                 </TabsContent>
               </Tabs>
+
+              {/* 退出登录按钮 - 当有Cookie字符串时显示 */}
+              {cookie && cookie.trim() !== '' && (
+                <div className="mt-4">
+                  <Button
+                    onClick={handleLogout}
+                    variant="destructive"
+                    size="sm"
+                    className="w-full"
+                  >
+                    <XCircle className="w-4 h-4 mr-2" />
+                    退出登录
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </motion.div>

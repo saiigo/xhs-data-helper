@@ -23,6 +23,9 @@ export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
     'spider:config:setCookie',
     async (_event, cookie: string, validUntil?: number) => {
       configManager.setCookie(cookie, validUntil)
+      if (!cookie || cookie.trim() === '') {
+        await clearXhsSession()
+      }
       return { success: true }
     }
   )
@@ -50,6 +53,15 @@ export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
 
   ipcMain.handle('spider:webview:login', async () => {
     return await openLoginWindow()
+  })
+
+  ipcMain.handle('spider:webview:clearSession', async () => {
+    try {
+      await clearXhsSession()
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
   })
 
   ipcMain.handle('spider:config:setPaths', async (_event, paths: any) => {
@@ -258,64 +270,123 @@ export function registerSpiderHandlers(mainWindow: BrowserWindow | null) {
 
 async function openLoginWindow(): Promise<{ success: boolean; cookie?: string; error?: string }> {
   return new Promise((resolve) => {
-    const loginWindow = new BrowserWindow({
-      width: 500,
-      height: 700,
-      title: '登录小红书',
-      icon: appIcon,
-      resizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      autoHideMenuBar: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        javascript: true,
-      },
-    })
-
-    loginWindow.loadURL('https://www.xiaohongshu.com/login')
-
-    // 监听 URL 变化，检测是否重定向到 /explore（表示登录成功）
-    loginWindow.webContents.on('did-navigate', async (_event, url) => {
-      if (url.includes('/explore')) {
-        // 登录成功，重定向到了 explore 页面
-        try {
-          const cookies = await loginWindow.webContents.session.cookies.get({
-            domain: '.xiaohongshu.com',
-          })
-          const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-          loginWindow.close()
-          resolve({ success: true, cookie: cookieString })
-        } catch (error: any) {
-          console.error('Error extracting cookies:', error)
-          loginWindow.close()
-          resolve({ success: false, error: '提取 Cookie 失败' })
-        }
+    const startLogin = async () => {
+      try {
+        await clearXhsSession()
+      } catch (error) {
+        console.error('Failed to clear existing sessions before login:', error)
       }
-    })
 
-    // 同时监听 did-redirect-navigation（处理重定向）
-    loginWindow.webContents.on('did-redirect-navigation', async (_event, url) => {
-      if (url.includes('/explore')) {
-        try {
-          const cookies = await loginWindow.webContents.session.cookies.get({
-            domain: '.xiaohongshu.com',
-          })
-          const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-          loginWindow.close()
-          resolve({ success: true, cookie: cookieString })
-        } catch (error: any) {
-          console.error('Error extracting cookies:', error)
-          loginWindow.close()
-          resolve({ success: false, error: '提取 Cookie 失败' })
+      // 创建一个全新的session，每次登录都是独立的会话
+      const { session } = require('electron')
+      const partition = `xiaohongshu-login-${Date.now()}`
+      const newSession = session.fromPartition(partition)
+
+      const loginWindow = new BrowserWindow({
+        width: 500,
+        height: 700,
+        title: '登录小红书',
+        icon: appIcon,
+        resizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        autoHideMenuBar: true,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          javascript: true,
+          session: newSession, // 使用全新的session
+        },
+      })
+
+      clearXhsSession(newSession).catch((error: any) => {
+        console.error('Failed to clear login session storage:', error)
+      })
+
+      loginWindow.loadURL('https://www.xiaohongshu.com/login')
+
+      // 监听 URL 变化，检测是否重定向到 /explore（表示登录成功）
+      loginWindow.webContents.on('did-navigate', async (_event, url) => {
+        if (url.includes('/explore')) {
+          // 登录成功，重定向到了 explore 页面
+          try {
+            const cookies = await loginWindow.webContents.session.cookies.get({
+              domain: '.xiaohongshu.com',
+            })
+            const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+            loginWindow.close()
+            resolve({ success: true, cookie: cookieString })
+          } catch (error: any) {
+            console.error('Error extracting cookies:', error)
+            loginWindow.close()
+            resolve({ success: false, error: '提取 Cookie 失败' })
+          }
         }
-      }
-    })
+      })
 
-    // 处理用户手动关闭窗口
-    loginWindow.on('closed', () => {
-      resolve({ success: false, error: '用户关闭了登录窗口' })
+      // 同时监听 did-redirect-navigation（处理重定向）
+      loginWindow.webContents.on('did-redirect-navigation', async (_event, url) => {
+        if (url.includes('/explore')) {
+          try {
+            const cookies = await loginWindow.webContents.session.cookies.get({
+              domain: '.xiaohongshu.com',
+            })
+            const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+            loginWindow.close()
+            resolve({ success: true, cookie: cookieString })
+          } catch (error: any) {
+            console.error('Error extracting cookies:', error)
+            loginWindow.close()
+            resolve({ success: false, error: '提取 Cookie 失败' })
+          }
+        }
+      })
+
+      // 处理用户手动关闭窗口
+      loginWindow.on('closed', () => {
+        resolve({ success: false, error: '用户关闭了登录窗口' })
+      })
+    }
+
+    startLogin().catch((error) => {
+      console.error('Failed to start login window:', error)
+      resolve({ success: false, error: '打开登录窗口失败' })
     })
   })
+}
+
+async function clearXhsSession(targetSession?: Electron.Session): Promise<void> {
+  const { session } = require('electron')
+  const sessions = targetSession
+    ? [targetSession]
+    : (typeof session.getAllSessions === 'function' ? session.getAllSessions() : [session.defaultSession])
+
+  await Promise.all(
+    sessions.map(async (item: Electron.Session) => {
+      try {
+        const cookies = await item.cookies.get({ domain: '.xiaohongshu.com' })
+        await Promise.all(
+          cookies.map((cookie) =>
+            item.cookies.remove('https://www.xiaohongshu.com', cookie.name).catch(() => undefined)
+          )
+        )
+      } catch (error) {
+        console.error('Failed to clear XHS cookies:', error)
+      }
+
+      try {
+        await item.clearStorageData({
+          storages: ['cookies', 'localstorage', 'sessionstorage', 'indexdb', 'serviceworkers', 'cachestorage']
+        })
+      } catch (error) {
+        console.error('Failed to clear XHS storage:', error)
+      }
+
+      try {
+        await item.clearCache()
+      } catch (error) {
+        console.error('Failed to clear XHS cache:', error)
+      }
+    })
+  )
 }

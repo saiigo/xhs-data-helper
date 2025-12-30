@@ -221,6 +221,33 @@ export class PythonBridge {
         if (this.currentTaskId) {
           databaseManager.addLog(this.currentTaskId, message)
 
+          // 检查是否遇到登录过期情况
+          if (message.type === 'log' && message.message && message.message.includes('登录已过期')) {
+            console.log('[Python non-JSON]:', line)
+            console.log('遇到登录过期，提前结束爬取任务')
+            
+            // 更新任务状态为失败
+            databaseManager.updateTask(this.currentTaskId, 'failed', '登录已过期，请重新登录')
+            this.taskStatusSet = true
+            
+            // 停止当前任务
+            this.stop()
+            
+            // 发送错误消息给前端
+            this.messageHandler?.({
+              type: 'error',
+              code: 'LOGIN_EXPIRED',
+              message: '登录已过期，请重新登录'
+            })
+            
+            // 验证cookie并通知前端
+            this.validateCookieAndNotify().catch(err => {
+              console.error('Failed to validate cookie:', err)
+            })
+            
+            return
+          }
+          
           if (message.type === 'done') {
             const count = message.count || 0
             const apiSuccess = message.api_success ?? true
@@ -229,7 +256,7 @@ export class PythonBridge {
             let status: 'completed' | 'warning' | 'failed' = 'completed'
             let errorMsg: string | undefined
 
-            if (!apiSuccess || apiMessage.includes('账号异常') || apiMessage.includes('检测到账号异常') || apiMessage.includes('code=-1')) {
+            if (!apiSuccess || apiMessage.includes('账号异常') || apiMessage.includes('检测到账号异常') || apiMessage.includes('code=-1') || apiMessage.includes('登录已过期')) {
               status = 'failed'
               errorMsg = apiMessage || '账号异常，请重新登录'
 
@@ -267,17 +294,32 @@ export class PythonBridge {
     this.process.stderr?.on('data', (data) => {
       const stderrOutput = data.toString()
       console.error('[Python stderr]:', stderrOutput)
-      const errorMessage: PythonMessage = {
-        type: 'error',
-        message: data.toString(),
-      }
+      const lines = stderrOutput.split('\n').filter((line) => line.trim())
 
-      // Save to database
-      if (this.currentTaskId) {
-        databaseManager.addLog(this.currentTaskId, errorMessage)
-      }
+      lines.forEach((line) => {
+        try {
+          const message: PythonMessage = JSON.parse(line)
 
-      this.messageHandler?.(errorMessage)
+          if (this.currentTaskId) {
+            databaseManager.addLog(this.currentTaskId, message)
+          }
+
+          this.messageHandler?.(message)
+          return
+        } catch (error) {
+          const logMessage: PythonMessage = {
+            type: 'log',
+            level: 'ERROR',
+            message: line,
+          }
+
+          if (this.currentTaskId) {
+            databaseManager.addLog(this.currentTaskId, logMessage)
+          }
+
+          this.messageHandler?.(logMessage)
+        }
+      })
     })
 
     // Handle process exit
@@ -300,17 +342,26 @@ export class PythonBridge {
         }
       }
 
+      const taskId = this.currentTaskId
       this.process = null
       this.currentTaskId = null
       this.taskStatusSet = false // Reset flag
 
-      if (code !== 0 && code !== null) {
+      // 发送任务结束信号给前端
+      if (code === 0) {
         this.messageHandler?.({
-          type: 'error',
-          code: 'PROCESS_EXIT',
-          message: `Process exited with code ${code}`,
+          type: 'done',
+          success: true,
+          message: '任务已完成'
+        })
+      } else if (code !== null) {
+        this.messageHandler?.({
+          type: 'done',
+          success: false,
+          message: `进程异常退出，退出码: ${code}`
         })
       }
+      this.messageHandler = null
     })
 
     // Handle process error
@@ -347,6 +398,13 @@ export class PythonBridge {
         databaseManager.updateTask(this.currentTaskId, 'stopped')
         this.currentTaskId = null
       }
+
+      // 发送任务停止信号给前端
+      this.messageHandler?.({
+        type: 'done',
+        success: false,
+        message: '任务已被停止'
+      })
 
       this.taskStatusSet = false
       this.messageHandler = null

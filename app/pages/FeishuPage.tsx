@@ -31,6 +31,7 @@ interface ProcessedBloggerData {
   bloggerId: string
   shareUrl: string
   notes: any[]
+  noteCount?: number
   user?: BloggerUserInfo
   tags?: string[]
 }
@@ -217,6 +218,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
 
     // 检查写入表格链接是否存在
     if (!writeTableUrl) {
+      console.error('=== 开始工作失败：请填写写入飞书多维表格链接 ===')
       toast.error('请填写写入飞书多维表格链接')
       return
     }
@@ -237,50 +239,18 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
     setLocalExcelPath('')
     setProcessedData([])
     
-    // 读取写入表格的现有数据，用于去重
-    let existingBloggers: string[] = []
-    try {
-      console.log('开始读取写入表格的现有数据...')
-      const existingDataResult = await window.conveyor.feishu.fetchTableData(writeTableUrl)
-      if (existingDataResult.success && existingDataResult.data) {
-        console.log('成功读取写入表格的现有数据，共', existingDataResult.data.length, '条')
-        // 提取现有博主ID列表
-        existingBloggers = existingDataResult.data.map((item: any) => item.bloggerId).filter((id: string) => id)
-        console.log('现有博主ID列表:', existingBloggers)
-      } else {
-        console.warn('读取写入表格现有数据失败或无数据:', existingDataResult.error)
-      }
-    } catch (err) {
-      console.error('读取写入表格现有数据时发生错误:', err)
-      // 不中断流程，继续执行
-    }
-    
     try {
       toast.success('开始处理博主数据...')
       
-      // 遍历所有博主数据，读取笔记列表和详情信息，跳过已处理的博主
+      // 遍历所有博主数据，读取笔记列表和详情信息
       const allBloggerData: ProcessedBloggerData[] = []
-      // 过滤掉已经存在的博主，进行去重
-      const filteredData = data.filter(blogger => !existingBloggers.includes(blogger.bloggerId))
-      const totalBloggersCount = filteredData.length
+      const totalBloggersCount = data.length
       
-      if (totalBloggersCount === 0) {
-        console.log('所有博主都已处理过，无需重复处理')
-        toast.success('所有博主都已处理过，无需重复处理')
-        setResult({
-          success: true,
-          message: '所有博主都已处理过，无需重复处理'
-        })
-        setIsLoading(false)
-        setIsWorking(false)
-        setProgress(100)
-        return
-      }
-      
-      console.log(`去重后需要处理的博主数量: ${totalBloggersCount}`)
+      console.log(`=== 开始处理 ${totalBloggersCount} 个博主 ===`)
+      console.log(`需要处理的博主列表: ${JSON.stringify(data.map(item => item.bloggerId))}`)
       
       for (let i = 0; i < totalBloggersCount; i++) {
-        const blogger = filteredData[i]
+        const blogger = data[i]
         setCurrentBlogger(i + 1)
         setProgress(Math.round((i / totalBloggersCount) * 100))
         setTotalNotes(0)
@@ -288,35 +258,95 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
         
         console.log(`=== 开始处理博主 ${blogger.bloggerId} (${i + 1}/${totalBloggersCount}) ===`)
         
-        // 1. 调用API读取博主笔记列表
-        console.log(`开始读取博主 ${blogger.bloggerId} 的笔记列表...`)
-        const notesResult = await window.conveyor.feishu.fetchBloggerNotes(blogger.bloggerId, blogger.shareUrl)
-        
-        if (notesResult.success) {
-          console.log(`成功读取博主 ${blogger.bloggerId} 的笔记列表，共 ${notesResult.data?.length || 0} 条笔记`)
-          console.log('直接使用爬虫返回的笔记详情数据，无需额外请求')
+        try {
+          // 1. 调用API读取博主笔记列表
+          console.log(`开始读取博主 ${blogger.bloggerId} 的笔记列表...`)
+          const notesResult = await window.conveyor.feishu.fetchBloggerNotes(blogger.bloggerId, blogger.shareUrl, writeTableUrl)
           
           const notes = notesResult.data || []
-          setTotalNotes(notes.length)
-          setCurrentNote(notes.length)
-          setProgress(Math.round(((i + 1) / totalBloggersCount) * 100))
-
+          const noteCount = notesResult.noteCount ?? notes.length
+          const hasNotes = notes.length > 0
           const userProfile = normalizeUserInfo(notesResult.user, notes)
-          
-          // 添加博主数据到结果数组
-          allBloggerData.push({
+          const bloggerPayload = {
             bloggerId: blogger.bloggerId,
             shareUrl: blogger.shareUrl,
             notes,
+            noteCount,
             user: userProfile,
             tags: userProfile?.tags || []
-          })
+          }
           
-          toast.success(`成功处理博主 ${blogger.bloggerId}，共读取 ${notes.length} 条笔记详情`)
-        } else {
-          console.error(`读取博主 ${blogger.bloggerId} 的笔记列表失败: ${notesResult.error}`)
-          toast.error(`处理博主 ${blogger.bloggerId} 失败: ${notesResult.error}`)
+          // 添加博主数据到结果数组（即使失败也保留空记录）
+          allBloggerData.push(bloggerPayload)
+
+          if (notesResult.success || hasNotes) {
+            console.log(`成功读取博主 ${blogger.bloggerId} 的笔记列表，共 ${notes.length} 条笔记`)
+            console.log('直接使用爬虫返回的笔记详情数据，无需额外请求')
+
+            setTotalNotes(noteCount)
+            setCurrentNote(noteCount)
+
+            if (notesResult.partial || !notesResult.success) {
+              const errorTip = notesResult.error ? `，原因: ${notesResult.error}` : ''
+              toast.warning(`博主 ${blogger.bloggerId} 部分笔记详情失败，已保存已获取数据（失败3次后将跳过当前博主）${errorTip}`)
+            } else {
+              toast.success(`成功处理博主 ${blogger.bloggerId}，共读取 ${notes.length} 条笔记详情`)
+            }
+          } else {
+            console.error(`读取博主 ${blogger.bloggerId} 的笔记列表失败: ${notesResult.error}`)
+            toast.error(`处理博主 ${blogger.bloggerId} 失败: ${notesResult.error}`)
+          }
+
+          if (writeTableUrl) {
+            try {
+              console.log(`开始增量写入博主 ${blogger.bloggerId} 数据到飞书表格...`)
+              const incrementalWriteResult = await window.conveyor.feishu.writeTableData(writeTableUrl, [bloggerPayload])
+
+              if (incrementalWriteResult.success) {
+                console.log(`博主 ${blogger.bloggerId} 数据已增量写入飞书表格`)
+              } else {
+                console.error(`博主 ${blogger.bloggerId} 增量写入失败: ${incrementalWriteResult.error}`)
+              }
+            } catch (err) {
+              const errorMsg = err instanceof Error ? err.message : '增量写入飞书表格失败'
+              console.error(`博主 ${blogger.bloggerId} 增量写入失败:`, errorMsg)
+            }
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : '处理博主数据失败'
+          console.error(`读取博主 ${blogger.bloggerId} 的笔记列表失败: ${errorMsg}`)
+          toast.error(`处理博主 ${blogger.bloggerId} 失败: ${errorMsg}`)
+
+          allBloggerData.push({
+            bloggerId: blogger.bloggerId,
+            shareUrl: blogger.shareUrl,
+            notes: [],
+            noteCount: 0,
+            user: undefined,
+            tags: []
+          })
+
+          if (writeTableUrl) {
+            try {
+              console.log(`开始增量写入博主 ${blogger.bloggerId} 空数据到飞书表格...`)
+              await window.conveyor.feishu.writeTableData(writeTableUrl, [
+                {
+                  bloggerId: blogger.bloggerId,
+                  shareUrl: blogger.shareUrl,
+                  notes: [],
+                  noteCount: 0,
+                  user: undefined,
+                  tags: []
+                }
+              ])
+            } catch (writeError) {
+              const writeMsg = writeError instanceof Error ? writeError.message : '增量写入飞书表格失败'
+              console.error(`博主 ${blogger.bloggerId} 增量写入失败:`, writeMsg)
+            }
+          }
         }
+
+        setProgress(Math.round(((i + 1) / totalBloggersCount) * 100))
         
         // 获取读取间隔配置
         const config = await window.conveyor.spider.getConfig()
@@ -398,6 +428,68 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       setIsLoading(false)
       setIsWorking(false)
       setProgress(100)
+    }
+  }
+
+  // 读取汇总信息，比较博主笔记数量
+  const handleReadSummaryInfo = async () => {
+    if (!writeTableUrl) {
+      toast.error('请先填写写入飞书多维表格链接')
+      return
+    }
+
+    try {
+      console.log('开始读取汇总信息并比较笔记数量...')
+      
+      // 1. 读取飞书表格数据
+      const result = await window.conveyor.feishu.readSummaryInfo(writeTableUrl)
+      if (result.success) {
+        console.log('读取汇总信息成功:', result.data)
+        toast.success('读取汇总信息成功')
+        
+        // 2. 对于每个博主，比较汇总表中的笔记数量和实际爬取到的笔记数量
+        for (const blogger of result.data) {
+          console.log(`博主 ${blogger.bloggerId} 的笔记数: ${blogger.noteCount}`)
+          
+          // 3. 这里可以添加比较逻辑，比如：
+          // - 比较汇总表中的笔记数量和实际爬取到的笔记数量
+          // - 或者比较不同博主的笔记数量
+          // - 或者与历史数据比较
+          
+          // 示例：简单输出每个博主的笔记数量
+          console.log(`博主 ${blogger.bloggerId} 的笔记数: ${blogger.noteCount}`)
+        }
+        
+        // 4. 可以添加一些统计信息
+        const totalNoteCount = result.data.reduce((sum, blogger) => sum + blogger.noteCount, 0)
+        const avgNoteCount = totalNoteCount / result.data.length
+        console.log(`
+统计信息：`) 
+        console.log(`共 ${result.data.length} 个博主`)
+        console.log(`总笔记数：${totalNoteCount}`)
+        console.log(`平均每个博主的笔记数：${avgNoteCount.toFixed(2)}`)
+        
+        // 5. 找出笔记数最多和最少的博主
+        const sortedByNoteCount = [...result.data].sort((a, b) => b.noteCount - a.noteCount)
+        if (sortedByNoteCount.length > 0) {
+          console.log(`
+笔记数最多的博主：`) 
+          console.log(`- ${sortedByNoteCount[0].bloggerId}: ${sortedByNoteCount[0].noteCount} 条`)
+          
+          console.log(`
+笔记数最少的博主：`) 
+          console.log(`- ${sortedByNoteCount[sortedByNoteCount.length - 1].bloggerId}: ${sortedByNoteCount[sortedByNoteCount.length - 1].noteCount} 条`)
+        }
+        
+        toast.success(`成功处理 ${result.data.length} 个博主，总笔记数 ${totalNoteCount}`)
+      } else {
+        console.error('读取汇总信息失败:', result.error)
+        toast.error(result.error || '读取汇总信息失败')
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : '读取汇总信息失败'
+      console.error('读取汇总信息失败:', errorMsg)
+      toast.error(errorMsg)
     }
   }
 
@@ -553,13 +645,18 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
           
           <div className="space-y-2">
             <Label htmlFor="writeTableUrl">飞书多维表格链接（写入）</Label>
-            <Input
-              id="writeTableUrl"
-              placeholder=""
-              value={writeTableUrl}
-              onChange={(e) => setWriteTableUrl(e.target.value)}
-              className="flex-1"
-            />
+            <div className="flex gap-2">
+              <Input
+                id="writeTableUrl"
+                placeholder=""
+                value={writeTableUrl}
+                onChange={(e) => setWriteTableUrl(e.target.value)}
+                className="flex-1"
+              />
+              <Button onClick={handleReadSummaryInfo} disabled={!writeTableUrl}>
+                读取汇总信息
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
               处理完成后的数据将写入此表格（可选）
             </p>

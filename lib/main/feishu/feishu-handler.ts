@@ -79,6 +79,19 @@ const getEnglishFieldName = (chineseName: string): string => {
   return fieldNameMapping[chineseName] || chineseName
 }
 
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 15000) => {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 const formatNoteForExcel = (note: any) => {
   const imageList = toStringArray(note?.image_list || note?.images || note?.imageList)
   const tags = toStringArray(note?.tags)
@@ -250,10 +263,142 @@ export class FeishuHandler {
     })
 
     // 读取博主笔记列表
-    ipcMain.handle('feishu:fetchBloggerNotes', async (_, bloggerId: string, shareUrl?: string) => {
+    ipcMain.handle('feishu:fetchBloggerNotes', async (_, bloggerId: string, shareUrl?: string, tableUrl?: string) => {
       try {
         console.log(`=== 开始读取博主 ${bloggerId} 的笔记列表 ===`)
         console.log(`分享链接: ${shareUrl}`)
+        console.log(`tableUrl: ${tableUrl}`)
+        
+        let previousNoteCount = 0
+        let existingNoteIds: string[] = []
+        
+        // 1. 从飞书表格获取该博主之前的笔记数量
+        if (tableUrl) {
+          const config = this.configManager.getConfig()
+          if (config.appId && config.appSecret) {
+            const accessToken = await this.getCachedAccessToken(config.appId, config.appSecret)
+            const { docId } = this.parseFeishuDocUrl(tableUrl)
+            
+            // 查找博主信息汇总表
+            const tablesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables`
+            const tablesResponse = await fetch(tablesUrl, {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+            
+            if (tablesResponse.ok) {
+              const tablesData = JSON.parse(await tablesResponse.text())
+              const tables = tablesData?.data?.items || []
+              
+              // 查找博主信息汇总表
+              const summaryTable = tables.find((table: any) => {
+                const tableName = (table.name || '').toLowerCase()
+                return tableName.includes('汇总') || 
+                       tableName.includes('博主') || 
+                       tableName.includes('blogger') ||
+                       tableName.includes('summary')
+              })
+              
+              if (summaryTable) {
+                // 在汇总表中查找该博主的记录
+                const searchSummaryUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${summaryTable.table_id}/records/search`
+                const summarySearchResponse = await fetch(searchSummaryUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    filter: {
+                      conditions: [{
+                        field_name: 'blogger_id',
+                        operator: 'eq',
+                        value: bloggerId
+                      }]
+                    }
+                  })
+                })
+                
+                if (summarySearchResponse.ok) {
+                  const summarySearchData = JSON.parse(await summarySearchResponse.text())
+                  const bloggerSummary = summarySearchData?.data?.items?.[0]
+                  
+                  if (bloggerSummary) {
+                    // 获取汇总表中的笔记数量
+                    previousNoteCount = Number(bloggerSummary.fields?.note_count || bloggerSummary.fields?.['笔记数量'] || 0)
+                    console.log(`汇总表中博主 ${bloggerId} 的笔记数量: ${previousNoteCount}`)
+                  }
+                }
+              }
+
+              const extractNoteId = (fields: any): string => {
+                const rawNoteId = fields?.note_id || fields?.['笔记ID']
+                if (!rawNoteId) return ''
+                if (Array.isArray(rawNoteId)) {
+                  if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
+                    return String(rawNoteId[0].text).trim()
+                  }
+                  return String(rawNoteId).trim()
+                }
+                if (typeof rawNoteId === 'object' && rawNoteId.text) {
+                  return String(rawNoteId.text).trim()
+                }
+                return String(rawNoteId).trim()
+              }
+
+              const noteTableName = `博主_${bloggerId}`
+              const noteTable = tables.find((table: any) => table.name === noteTableName)
+              if (noteTable) {
+                const existingNoteIdsSet = new Set<string>()
+                let hasMore = true
+                let pageToken = ''
+
+                while (hasMore) {
+                  const searchNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTable.table_id}/records/search`
+                  const searchNotesResponse = await fetch(searchNotesUrl, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${accessToken}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      page_size: 1000,
+                      page_token: pageToken,
+                      sort: [{ field_name: 'note_id', order: 'asc' }]
+                    })
+                  })
+
+                  if (!searchNotesResponse.ok) {
+                    console.warn(`获取已存在笔记ID失败，将跳过去重: ${await searchNotesResponse.text()}`)
+                    break
+                  }
+
+                  const searchNotesResult = JSON.parse(await searchNotesResponse.text())
+                  const existingRecords = searchNotesResult?.data?.items || []
+                  existingRecords.forEach((record: any) => {
+                    const noteId = extractNoteId(record.fields || {})
+                    if (noteId) {
+                      existingNoteIdsSet.add(noteId)
+                    }
+                  })
+
+                  hasMore = !!searchNotesResult?.data?.has_more
+                  pageToken = searchNotesResult?.data?.page_token || ''
+                  if (!hasMore || !pageToken) {
+                    break
+                  }
+                }
+
+                existingNoteIds = Array.from(existingNoteIdsSet)
+                console.log(`已存在笔记ID数量: ${existingNoteIds.length}`)
+              } else {
+                console.log(`未找到博主 ${bloggerId} 的笔记表，跳过去重读取`)
+              }
+            }
+          }
+        }
         
         // 从配置管理器获取爬虫配置
         const config = await import('../spider/config-manager').then(m => m.configManager.getAll())
@@ -269,7 +414,8 @@ export class FeishuHandler {
           cookie: config.cookie,
           taskType: 'user',
           params: {
-            userUrl: userUrl
+            userUrl: userUrl,
+            existingNoteIds
           },
           saveOptions: {
             mode: 'excel',
@@ -285,11 +431,12 @@ export class FeishuHandler {
         
         // 调用爬虫API获取博主笔记列表
         // 使用Promise包装回调模式
-        const notesResult = await new Promise<{ success: boolean; data?: any[]; user?: any; error?: string }>((resolve) => {
+        const notesResult = await new Promise<{ success: boolean; data?: any[]; user?: any; error?: string; noteCount?: number; partial?: boolean }>((resolve) => {
           let allNotes: any[] = []
           let apiSuccess = true
           let apiMsg = ''
           let userInfo: any = null
+          let noteCount = 0
           
           // 启动爬虫任务
           pythonBridge.start(spiderConfig, (message) => {
@@ -299,7 +446,7 @@ export class FeishuHandler {
             switch (message.type) {
               case 'done':
                 // 任务完成
-                // 注意：这里的message.count表示爬取到的笔记数量
+                // 注意：这里的message.count表示最新笔记数量（总数）
                 // 实际的笔记数据可能已经通过log消息返回，或者需要通过其他方式获取
                 // 我们需要区分任务是否成功
                 apiSuccess = message.api_success ?? true
@@ -311,14 +458,27 @@ export class FeishuHandler {
                   userInfo = message.user_info
                 }
                 
-                console.log(`任务完成，API成功: ${apiSuccess}, 消息: ${apiMsg}, 爬取到的笔记数量: ${message.count || 0}`)
+                const currentNoteCount = message.count || 0
+                noteCount = currentNoteCount
+                console.log(`任务完成，API成功: ${apiSuccess}, 消息: ${apiMsg}, 最新笔记数量: ${currentNoteCount}`)
+                if (apiSuccess && previousNoteCount > 0) {
+                  console.log(`比较笔记数量: 之前 ${previousNoteCount} 条，当前 ${currentNoteCount} 条`)
+                }
                 
-                if (apiSuccess) {
-                  // 如果API调用成功，返回结果
-                  // 注意：对于用户笔记，实际的笔记URL列表会在log消息中输出
-                  // 这里我们需要从log中提取，或者直接返回空数组，因为飞书功能主要依赖于下载功能
-                  // 暂时返回空数组，后续可以改进
-                  resolve({ success: true, data: allNotes, user: userInfo })
+                const partialSuccess = !apiSuccess && allNotes.length > 0
+                if (apiSuccess || partialSuccess) {
+                  // 如果API调用成功，或有部分数据则返回结果
+                  if (partialSuccess) {
+                    console.warn(`笔记详情部分失败，已返回已获取数据: ${apiMsg}`)
+                  }
+                  resolve({
+                    success: true,
+                    data: allNotes,
+                    user: userInfo,
+                    noteCount,
+                    error: partialSuccess ? apiMsg || '笔记详情获取部分失败' : undefined,
+                    partial: partialSuccess
+                  })
                 } else {
                   // API调用失败
                   resolve({ success: false, error: apiMsg || '获取博主笔记失败' })
@@ -356,7 +516,9 @@ export class FeishuHandler {
           return {
             success: true,
             data: notesResult.data || [],
-            user: notesResult.user
+            user: notesResult.user,
+            noteCount: notesResult.noteCount,
+            message: notesResult.message
           }
         } else {
           console.error(`=== 读取博主 ${bloggerId} 的笔记列表失败 ===`)
@@ -406,6 +568,7 @@ export class FeishuHandler {
       bloggerId: string
       shareUrl: string
       notes: Array<any>
+      noteCount?: number
       user?: {
         nickname?: string
         avatar?: string
@@ -442,7 +605,7 @@ export class FeishuHandler {
           '作品被赞数量': blogger.user?.likedCount || 0,
           '作品收藏数量': blogger.user?.collectedCount || 0,
           '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
-          '笔记数量': blogger.notes?.length || 0,
+          '笔记数量': (blogger.noteCount ?? blogger.notes?.length) || 0,
           '处理时间': summaryTimestamp
         }))
 
@@ -458,7 +621,7 @@ export class FeishuHandler {
 
         // 为每个博主创建一个sheet
         for (const blogger of bloggerData) {
-          const noteCount = blogger.notes?.length || 0
+          const noteCount = (blogger.noteCount ?? blogger.notes?.length) || 0
           console.log(`正在处理博主 ${blogger.bloggerId} 的数据，共 ${noteCount} 条笔记`)
           
           const notesData = formatNotesForExcel(blogger.notes)
@@ -512,6 +675,7 @@ export class FeishuHandler {
       bloggerId: string
       shareUrl: string
       notes: Array<any>
+      noteCount?: number
       user?: {
         nickname?: string
         avatar?: string
@@ -549,7 +713,7 @@ export class FeishuHandler {
           '作品被赞数量': blogger.user?.likedCount || 0,
           '作品收藏数量': blogger.user?.collectedCount || 0,
           '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
-          '笔记数量': blogger.notes?.length || 0,
+          '笔记数量': (blogger.noteCount ?? blogger.notes?.length) || 0,
           '处理时间': summaryTimestamp
         }))
         
@@ -629,12 +793,18 @@ export class FeishuHandler {
         const tablesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables`
         console.log('调用列出表格API地址:', tablesUrl)
         
-        const tablesResponse = await fetch(tablesUrl, {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          }
-        })
+        let tablesResponse: Response
+        try {
+          tablesResponse = await fetchWithTimeout(tablesUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          })
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : '请求超时'
+          throw new Error(`验证表格权限请求失败: ${errorMsg}`)
+        }
         
         const tablesResponseText = await tablesResponse.text()
         console.log('列出表格API响应:', tablesResponse.status, tablesResponse.statusText, tablesResponseText)
@@ -678,7 +848,7 @@ export class FeishuHandler {
             '作品被赞数量': blogger.user?.likedCount || 0,
             '作品收藏数量': blogger.user?.collectedCount || 0,
             '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
-            '笔记数量': blogger.notes?.length || 0,
+            '笔记数量': (blogger.noteCount ?? blogger.notes?.length) || 0,
             '处理时间': summaryTimestamp
           }
         }))
@@ -1683,6 +1853,118 @@ export class FeishuHandler {
         }
       }
     })
+
+    // 读取飞书表格的汇总信息，获取博主的笔记数
+    ipcMain.handle('feishu:readSummaryInfo', async (_, tableUrl: string) => {
+      try {
+        const config = this.configManager.getConfig()
+        
+        // 检查配置是否完整
+        if (!config.appId || !config.appSecret) {
+          return {
+            success: false,
+            error: '飞书API配置不完整，请先在设置中配置App ID和App Secret'
+          }
+        }
+        
+        console.log(`=== 开始读取飞书表格汇总信息 ===`)
+        console.log(`表格链接: ${tableUrl}`)
+        
+        // 获取飞书访问令牌（优先使用缓存）
+        const accessToken = await this.getCachedAccessToken(config.appId, config.appSecret)
+        
+        // 解析飞书链接
+        const { docId, sheetId, type } = this.parseFeishuDocUrl(tableUrl)
+        
+        // 调用飞书API读取表格数据
+        const rawData = await this.fetchSheetData(accessToken, docId, sheetId, type)
+        
+        // 转换飞书表格数据为前端期望的格式
+        const formattedData = this.formatFeishuData(rawData, type)
+        
+        console.log(`✓ 成功读取飞书表格数据，共 ${formattedData.length} 条`)
+        
+        // 读取每个博主的笔记数
+        const bloggerNoteCounts = []
+        
+        for (const blogger of formattedData) {
+          // 查找对应博主的笔记列表数据表
+          const noteTableName = `博主_${blogger.bloggerId}`
+          
+          // 获取所有数据表列表
+          const tablesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables`
+          const tablesResponse = await fetch(tablesUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          })
+          
+          if (!tablesResponse.ok) {
+            console.warn(`获取数据表列表失败: ${tablesResponse.status} ${await tablesResponse.text()}`)
+            continue
+          }
+          
+          const tablesData = JSON.parse(await tablesResponse.text())
+          const tables = tablesData?.data?.items || []
+          
+          // 查找对应博主的笔记列表数据表
+          const noteTable = tables.find((table: any) => table.name === noteTableName)
+          
+          if (!noteTable) {
+            console.log(`未找到博主 ${blogger.bloggerId} 的笔记列表数据表`)
+            bloggerNoteCounts.push({
+              bloggerId: blogger.bloggerId,
+              noteCount: 0
+            })
+            continue
+          }
+          
+          // 获取笔记列表数据表中的笔记数量
+          const searchNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTable.table_id}/records/search`
+          const notesSearchResponse = await fetch(searchNotesUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              page_size: 1 // 只需要知道数量，不需要具体数据
+            })
+          })
+          
+          if (!notesSearchResponse.ok) {
+            console.warn(`获取笔记列表数据失败: ${notesSearchResponse.status} ${await notesSearchResponse.text()}`)
+            continue
+          }
+          
+          const notesSearchData = JSON.parse(await notesSearchResponse.text())
+          const noteCount = notesSearchData?.data?.total || 0
+          
+          bloggerNoteCounts.push({
+            bloggerId: blogger.bloggerId,
+            noteCount: noteCount
+          })
+          
+          console.log(`博主 ${blogger.bloggerId} 的笔记数: ${noteCount}`)
+        }
+        
+        console.log(`✓ 成功读取 ${bloggerNoteCounts.length} 个博主的笔记数`)
+        console.log(`=== 飞书表格汇总信息读取完成 ===`)
+        
+        return {
+          success: true,
+          data: bloggerNoteCounts
+        }
+      } catch (error) {
+        console.error('=== 读取飞书表格汇总信息失败 ===')
+        console.error('错误详情:', error)
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '读取飞书表格汇总信息失败'
+        }
+      }
+    })
   }
 
   /**
@@ -1873,6 +2155,129 @@ export class FeishuHandler {
   }
 
   /**
+   * 检查博主数据是否需要处理
+   * 1. 检查是否有对应博主的汇总信息
+   * 2. 检查是否有对应博主的笔记列表数据表
+   * 3. 比较汇总信息中的笔记数量和爬虫开始前的总笔记数量
+   * 4. 不一致时比较汇总和笔记列表数据表的数量
+   */
+  private async checkIfBloggerNeedsProcessing(accessToken: string, docId: string, bloggerId: string): Promise<boolean> {
+    try {
+      console.log(`=== 检查博主 ${bloggerId} 是否需要处理 ===`)
+      
+      // 1. 获取所有数据表列表
+      const tablesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables`
+      const tablesResponse = await fetch(tablesUrl, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+      
+      if (!tablesResponse.ok) {
+        console.warn(`获取数据表列表失败: ${tablesResponse.status} ${await tablesResponse.text()}`)
+        return true // 失败时默认需要处理
+      }
+      
+      const tablesData = JSON.parse(await tablesResponse.text())
+      const tables = tablesData?.data?.items || []
+      
+      // 2. 查找博主信息汇总表 - 改进查找逻辑，更灵活匹配
+      const summaryTable = tables.find((table: any) => {
+        const tableName = (table.name || '').toLowerCase()
+        return tableName.includes('汇总') || 
+               tableName.includes('博主') || 
+               tableName.includes('blogger') ||
+               tableName.includes('summary')
+      })
+      
+      if (!summaryTable) {
+        console.log(`未找到博主信息汇总表，需要处理博主 ${bloggerId}`)
+        return true
+      }
+      
+      // 3. 在汇总表中查找该博主的记录
+      const searchSummaryUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${summaryTable.table_id}/records/search`
+      const summarySearchResponse = await fetch(searchSummaryUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          filter: {
+            conditions: [{
+              field_name: 'blogger_id',
+              operator: 'eq',
+              value: bloggerId
+            }]
+          }
+        })
+      })
+      
+      if (!summarySearchResponse.ok) {
+        console.warn(`在汇总表中查找博主记录失败: ${summarySearchResponse.status} ${await summarySearchResponse.text()}`)
+        return true
+      }
+      
+      const summarySearchData = JSON.parse(await summarySearchResponse.text())
+      const bloggerSummary = summarySearchData?.data?.items?.[0]
+      
+      if (!bloggerSummary) {
+        console.log(`在汇总表中未找到博主 ${bloggerId} 的记录，需要处理`)
+        return true
+      }
+      
+      // 4. 获取汇总表中的笔记数量
+      const summaryNoteCount = Number(bloggerSummary.fields?.note_count || bloggerSummary.fields?.['笔记数量'] || 0)
+      console.log(`汇总表中博主 ${bloggerId} 的笔记数量: ${summaryNoteCount}`)
+      
+      // 5. 查找对应博主的笔记列表数据表
+      const noteTableName = `博主_${bloggerId}`
+      const noteTable = tables.find((table: any) => table.name === noteTableName)
+      
+      if (!noteTable) {
+        console.log(`未找到博主 ${bloggerId} 的笔记列表数据表，需要处理`)
+        return true
+      }
+      
+      // 6. 获取笔记列表数据表中的笔记数量
+      const searchNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTable.table_id}/records/search`
+      const notesSearchResponse = await fetch(searchNotesUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          page_size: 1 // 只需要知道数量，不需要具体数据
+        })
+      })
+      
+      if (!notesSearchResponse.ok) {
+        console.warn(`获取笔记列表数据失败: ${notesSearchResponse.status} ${await notesSearchResponse.text()}`)
+        return true
+      }
+      
+      const notesSearchData = JSON.parse(await notesSearchResponse.text())
+      const tableNoteCount = notesSearchData?.data?.total || 0
+      console.log(`笔记列表数据表中博主 ${bloggerId} 的笔记数量: ${tableNoteCount}`)
+      
+      // 7. 比较数量，决定是否需要处理
+      if (summaryNoteCount === tableNoteCount && summaryNoteCount > 0) {
+        console.log(`博主 ${bloggerId} 的汇总信息和笔记列表数量一致，无需重复处理`)
+        return false
+      } else {
+        console.log(`博主 ${bloggerId} 的汇总信息和笔记列表数量不一致，需要处理`)
+        return true
+      }
+    } catch (error) {
+      console.error(`检查博主 ${bloggerId} 是否需要处理时发生错误:`, error)
+      return true // 发生错误时默认需要处理
+    }
+  }
+
+  /**
    * 转换飞书表格数据为前端期望的格式
    * 支持飞书文档表格和飞书多维表格
    */
@@ -1963,20 +2368,21 @@ export class FeishuHandler {
         let bloggerId = ''
         let shareUrl = ''
         
-        // 尝试中文字段名
+        // 尝试中文字段名和英文字段名
         if (fields['博主ID']) bloggerId = extractFieldValue(fields['博主ID'])
         else if (fields['博主id']) bloggerId = extractFieldValue(fields['博主id'])
         else if (fields['博主id（必填）']) bloggerId = extractFieldValue(fields['博主id（必填）'])
         else if (fields['bloggerId']) bloggerId = extractFieldValue(fields['bloggerId'])
+        else if (fields['blogger_id']) bloggerId = extractFieldValue(fields['blogger_id']) // 添加对blogger_id的支持
         else if (fields['id']) bloggerId = extractFieldValue(fields['id'])
         
         if (fields['分享链接']) shareUrl = extractFieldValue(fields['分享链接'])
         else if (fields['主页链接']) shareUrl = extractFieldValue(fields['主页链接'])
         else if (fields['主页链接（必填）']) shareUrl = extractFieldValue(fields['主页链接（必填）'])
         else if (fields['shareUrl']) shareUrl = extractFieldValue(fields['shareUrl'])
+        else if (fields['share_url']) shareUrl = extractFieldValue(fields['share_url']) // 添加对share_url的支持
         else if (fields['链接']) shareUrl = extractFieldValue(fields['链接'])
         else if (fields['url']) shareUrl = extractFieldValue(fields['url'])
-        else if (fields['share_url']) shareUrl = extractFieldValue(fields['share_url'])
         
         console.log('提取到的博主ID:', bloggerId)
         console.log('提取到的分享链接:', shareUrl)
