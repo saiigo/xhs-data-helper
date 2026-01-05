@@ -467,7 +467,7 @@ export default function SettingsPage({ onCookieStatusChange, onStorageModeChange
               </Tabs>
 
               {/* 退出登录按钮 - 当有Cookie字符串时显示 */}
-              {cookie && cookie.trim() !== '' && (
+              {/* {cookie && cookie.trim() !== '' && (
                 <div className="mt-4">
                   <Button
                     onClick={handleLogout}
@@ -479,7 +479,7 @@ export default function SettingsPage({ onCookieStatusChange, onStorageModeChange
                     退出登录
                   </Button>
                 </div>
-              )}
+              )} */}
             </CardContent>
           </Card>
         </motion.div>

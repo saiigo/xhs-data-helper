@@ -32,6 +32,7 @@ interface ProcessedBloggerData {
   shareUrl: string
   notes: any[]
   noteCount?: number
+  updateCount?: number
   user?: BloggerUserInfo
   tags?: string[]
 }
@@ -72,6 +73,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
   const [localExcelPath, setLocalExcelPath] = useState('')
   const [processedData, setProcessedData] = useState<ProcessedBloggerData[]>([])
   const [isManualWriting, setIsManualWriting] = useState(false)
+  const [isCleaning, setIsCleaning] = useState(false)
 
   const parseTagList = (value: any): string[] => {
     if (!value) return []
@@ -264,14 +266,17 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
           const notesResult = await window.conveyor.feishu.fetchBloggerNotes(blogger.bloggerId, blogger.shareUrl, writeTableUrl)
           
           const notes = notesResult.data || []
-          const noteCount = notesResult.noteCount ?? notes.length
           const hasNotes = notes.length > 0
-          const userProfile = normalizeUserInfo(notesResult.user, notes)
+          const isNotesAvailable = notesResult.success || hasNotes
+          const noteCount = isNotesAvailable ? (notesResult.noteCount ?? notes.length) : 0
+          const updateCount = isNotesAvailable ? (notesResult.updateCount ?? 0) : 0
+          const userProfile = isNotesAvailable ? normalizeUserInfo(notesResult.user, notes) : undefined
           const bloggerPayload = {
             bloggerId: blogger.bloggerId,
             shareUrl: blogger.shareUrl,
             notes,
             noteCount,
+            updateCount,
             user: userProfile,
             tags: userProfile?.tags || []
           }
@@ -322,6 +327,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
             shareUrl: blogger.shareUrl,
             notes: [],
             noteCount: 0,
+            updateCount: 0,
             user: undefined,
             tags: []
           })
@@ -335,6 +341,7 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
                   shareUrl: blogger.shareUrl,
                   notes: [],
                   noteCount: 0,
+                  updateCount: 0,
                   user: undefined,
                   tags: []
                 }
@@ -361,7 +368,13 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
       
       setProgress(100)
       console.log('=== 所有博主数据处理完成 ===')
-      console.log('处理结果:', allBloggerData)
+      const summaryLines = allBloggerData.map(blogger => {
+        const displayName = blogger.user?.nickname ? `（${blogger.user.nickname}）` : ''
+        const noteCount = blogger.noteCount ?? blogger.notes?.length ?? 0
+        const updateCount = blogger.updateCount ?? 0
+        return `博主id：${blogger.bloggerId}${displayName}，笔记总数：${noteCount}，本次更新：${updateCount}`
+      })
+      console.log(`处理结果统计:\n${summaryLines.join('\n')}`)
       setProcessedData(allBloggerData)
       
       // 3. 生成Excel表格，每个博主一个sheet
@@ -382,29 +395,10 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
         excelMessage = `，Excel表格生成失败: ${excelResult.error}`
       }
       
-      // 4. 如果提供了写入表格链接，将数据写入飞书多维表格
+      // 4. 写入表格已在逐个博主处理中完成
       let writeMessage = ''
       if (writeTableUrl) {
-        try {
-          console.log('开始将数据写入飞书多维表格...')
-          console.log('写入表格链接:', writeTableUrl)
-          const writeResult = await window.conveyor.feishu.writeTableData(writeTableUrl, allBloggerData)
-          
-          if (writeResult.success) {
-            console.log('数据写入飞书多维表格成功')
-            toast.success('数据写入飞书多维表格成功')
-            writeMessage = `，写入飞书表格成功`
-          } else {
-            console.error('数据写入飞书多维表格失败:', writeResult.error)
-            toast.error(`数据写入飞书多维表格失败: ${writeResult.error}`)
-            writeMessage = `，写入飞书表格失败: ${writeResult.error}`
-          }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : '写入飞书表格失败'
-          console.error('写入飞书表格失败:', errorMsg)
-          toast.error(`写入飞书表格失败: ${errorMsg}`)
-          writeMessage = `，写入飞书表格失败: ${errorMsg}`
-        }
+        writeMessage = `，写入飞书表格已在逐个博主处理中完成`
       }
       
       // 设置最终结果
@@ -546,6 +540,35 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
     }
   }
 
+  const handleCleanTableData = async () => {
+    if (!writeTableUrl) {
+      toast.error('请先填写写入飞书多维表格链接')
+      return
+    }
+
+    if (!isConfigured) {
+      toast.error('请先在设置中配置飞书API')
+      return
+    }
+
+    setIsCleaning(true)
+    try {
+      await saveFeishuUrlsToConfig()
+      const cleanResult = await window.conveyor.feishu.cleanTableData(writeTableUrl)
+      if (cleanResult.success) {
+        toast.success(cleanResult.message || '飞书表格去重完成')
+      } else {
+        toast.error(cleanResult.error || '飞书表格去重失败')
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : '飞书表格去重失败'
+      console.error('飞书表格去重失败:', errorMsg)
+      toast.error(errorMsg)
+    } finally {
+      setIsCleaning(false)
+    }
+  }
+
   // 添加日志到页面
   const addLog = (message: string) => {
     setLogs(prevLogs => {
@@ -559,61 +582,45 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
   }
 
   // 组件挂载时检查飞书配置并设置日志捕获
-  useState(() => {
-    checkFeishuConfig()
-    
-    // 重写console.log，将日志同时输出到控制台和页面
+  React.useEffect(() => {
     const originalLog = console.log
+    const originalError = console.error
+    const originalWarn = console.warn
+
+    const formatArgs = (args: any[]) => args
+      .map(arg => {
+        if (typeof arg === 'object') {
+          try {
+            return JSON.stringify(arg, null, 2)
+          } catch {
+            return String(arg)
+          }
+        }
+        return String(arg)
+      })
+      .join(' ')
+
     console.log = (...args) => {
       originalLog.apply(console, args)
-      // 将日志格式化为字符串
-      const message = args.map(arg => {
-        if (typeof arg === 'object') {
-          try {
-            return JSON.stringify(arg, null, 2)
-          } catch {
-            return String(arg)
-          }
-        }
-        return String(arg)
-      }).join(' ')
-      addLog(message)
+      addLog(formatArgs(args))
     }
-    
-    // 重写console.error，将错误日志也输出到页面
-    const originalError = console.error
+
     console.error = (...args) => {
       originalError.apply(console, args)
-      const message = args.map(arg => {
-        if (typeof arg === 'object') {
-          try {
-            return JSON.stringify(arg, null, 2)
-          } catch {
-            return String(arg)
-          }
-        }
-        return String(arg)
-      }).join(' ')
-      addLog(`ERROR: ${message}`)
+      addLog(`ERROR: ${formatArgs(args)}`)
     }
-    
-    // 重写console.warn，将警告日志也输出到页面
-    const originalWarn = console.warn
+
     console.warn = (...args) => {
       originalWarn.apply(console, args)
-      const message = args.map(arg => {
-        if (typeof arg === 'object') {
-          try {
-            return JSON.stringify(arg, null, 2)
-          } catch {
-            return String(arg)
-          }
-        }
-        return String(arg)
-      }).join(' ')
-      addLog(`WARN: ${message}`)
+      addLog(`WARN: ${formatArgs(args)}`)
     }
-  })
+
+    return () => {
+      console.log = originalLog
+      console.error = originalError
+      console.warn = originalWarn
+    }
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -655,6 +662,13 @@ export default function FeishuPage({ onNavigate }: FeishuPageProps) {
               />
               <Button onClick={handleReadSummaryInfo} disabled={!writeTableUrl}>
                 读取汇总信息
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleCleanTableData}
+                disabled={!writeTableUrl || isCleaning}
+              >
+                {isCleaning ? <Loader2 className="w-4 h-4 animate-spin" /> : '清理文档'}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">

@@ -66,7 +66,8 @@ const fieldNameMapping: Record<string, string> = {
   '作者名称': 'author_name',
   '作者头像': 'author_avatar',
   'IP归属地': 'ip_location',
-  '爬取时间': 'crawl_time'
+  '爬取时间': 'crawl_time',
+  '爬取状态': 'crawl_status'
 }
 
 // 获取中文字段名
@@ -98,7 +99,7 @@ const formatNoteForExcel = (note: any) => {
   const firstImage = imageList.length > 0 ? imageList[0] : (note?.cover_image || note?.coverImage || note?.cover || '')
 
   return {
-    '笔记ID': note?.note_id || note?.id || '',
+    '笔记ID': note?.note_id || note?.node_id || note?.id || '',
     '笔记链接': note?.note_url || note?.url || '',
     '笔记类型': note?.note_type || note?.type || '',
     '标题': note?.title || '',
@@ -117,7 +118,8 @@ const formatNoteForExcel = (note: any) => {
     '作者名称': note?.author_name || note?.nickname || note?.author?.name || '',
     '作者头像': note?.author_avatar || note?.avatar || note?.author?.avatar || '',
     'IP归属地': note?.ip_location || note?.ipLocation || '',
-    '爬取时间': note?.crawl_time || note?.crawlTime || ''
+    '爬取时间': note?.crawl_time || note?.crawlTime || '',
+    '爬取状态': note?.crawl_status || note?.crawlStatus || ''
   }
 }
 
@@ -271,6 +273,7 @@ export class FeishuHandler {
         
         let previousNoteCount = 0
         let existingNoteIds: string[] = []
+        let retryNoteUrls: string[] = []
         
         // 1. 从飞书表格获取该博主之前的笔记数量
         if (tableUrl) {
@@ -334,7 +337,7 @@ export class FeishuHandler {
               }
 
               const extractNoteId = (fields: any): string => {
-                const rawNoteId = fields?.note_id || fields?.['笔记ID']
+                const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id'] || fields?.['笔记ID']
                 if (!rawNoteId) return ''
                 if (Array.isArray(rawNoteId)) {
                   if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
@@ -348,51 +351,117 @@ export class FeishuHandler {
                 return String(rawNoteId).trim()
               }
 
+              const extractNoteUrl = (fields: any): string => {
+                const rawNoteUrl = fields?.note_url || fields?.['note_url'] || fields?.['笔记链接'] || fields?.['noteUrl']
+                if (!rawNoteUrl) return ''
+                if (Array.isArray(rawNoteUrl)) {
+                  if (rawNoteUrl.length > 0 && rawNoteUrl[0]?.text) {
+                    return String(rawNoteUrl[0].text).trim()
+                  }
+                  return String(rawNoteUrl).trim()
+                }
+                if (typeof rawNoteUrl === 'object') {
+                  if (rawNoteUrl.link) return String(rawNoteUrl.link).trim()
+                  if (rawNoteUrl.text) return String(rawNoteUrl.text).trim()
+                }
+                return String(rawNoteUrl).trim()
+              }
+
+              const isSuccessStatus = (status?: string): boolean => {
+                if (!status) return false
+                const normalized = status.trim()
+                return normalized === '✅' || normalized.toLowerCase() === '成功'
+              }
+
               const noteTableName = `博主_${bloggerId}`
               const noteTable = tables.find((table: any) => table.name === noteTableName)
               if (noteTable) {
                 const existingNoteIdsSet = new Set<string>()
+                const retryNoteUrlSet = new Set<string>()
                 let hasMore = true
                 let pageToken = ''
+                let pageIndex = 1
+                const maxPages = 50
+                let sameTokenCount = 0
+                const maxSameTokenCount = 3
 
-                while (hasMore) {
-                  const searchNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTable.table_id}/records/search`
-                  const searchNotesResponse = await fetch(searchNotesUrl, {
-                    method: 'POST',
+                while (hasMore && pageIndex <= maxPages) {
+                  const listUrl = new URL(`https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTable.table_id}/records`)
+                  listUrl.searchParams.set('page_size', '1000')
+                  if (pageToken) {
+                    listUrl.searchParams.set('page_token', pageToken)
+                  }
+
+                  const listResponse = await fetchWithTimeout(listUrl.toString(), {
+                    method: 'GET',
                     headers: {
                       'Authorization': `Bearer ${accessToken}`,
                       'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      page_size: 1000,
-                      page_token: pageToken,
-                      sort: [{ field_name: 'note_id', order: 'asc' }]
-                    })
-                  })
-
-                  if (!searchNotesResponse.ok) {
-                    console.warn(`获取已存在笔记ID失败，将跳过去重: ${await searchNotesResponse.text()}`)
-                    break
-                  }
-
-                  const searchNotesResult = JSON.parse(await searchNotesResponse.text())
-                  const existingRecords = searchNotesResult?.data?.items || []
-                  existingRecords.forEach((record: any) => {
-                    const noteId = extractNoteId(record.fields || {})
-                    if (noteId) {
-                      existingNoteIdsSet.add(noteId)
                     }
                   })
 
-                  hasMore = !!searchNotesResult?.data?.has_more
-                  pageToken = searchNotesResult?.data?.page_token || ''
-                  if (!hasMore || !pageToken) {
+                  if (!listResponse.ok) {
+                    console.warn(`获取已存在笔记失败，将跳过去重: ${await listResponse.text()}`)
                     break
                   }
+
+                  const listResult = JSON.parse(await listResponse.text())
+                  if (listResult?.code !== 0 || !listResult?.data) {
+                    console.warn(`获取已存在笔记失败，将跳过去重: ${listResult?.msg || '未知错误'}`)
+                    break
+                  }
+
+                  const existingRecords = listResult?.data?.items || []
+                  existingRecords.forEach((record: any) => {
+                    const fields = record.fields || {}
+                    const noteId = extractNoteId(fields)
+                    if (noteId) {
+                      existingNoteIdsSet.add(noteId)
+                    }
+
+                    const crawlStatus = String(fields?.crawl_status || fields?.['爬取状态'] || '').trim()
+                    if (!isSuccessStatus(crawlStatus)) {
+                      const noteUrl = extractNoteUrl(fields)
+                      if (noteUrl) {
+                        retryNoteUrlSet.add(noteUrl)
+                      }
+                    }
+                  })
+
+                  hasMore = !!listResult?.data?.has_more
+                  const nextPageToken = listResult?.data?.page_token || ''
+
+                  if (!hasMore) {
+                    break
+                  }
+
+                  if (pageToken === nextPageToken) {
+                    sameTokenCount += 1
+                    if (sameTokenCount >= maxSameTokenCount) {
+                      console.warn('pageToken连续未变化，停止翻页')
+                      break
+                    }
+                  } else {
+                    sameTokenCount = 0
+                  }
+
+                  pageToken = nextPageToken
+                  pageIndex += 1
+                }
+
+                if (pageIndex > maxPages) {
+                  console.warn(`分页次数超过 ${maxPages} 页，停止获取`)
                 }
 
                 existingNoteIds = Array.from(existingNoteIdsSet)
+                const retryNoteUrlsFromTable = Array.from(retryNoteUrlSet)
                 console.log(`已存在笔记ID数量: ${existingNoteIds.length}`)
+                console.log(`需要补爬的笔记数量: ${retryNoteUrlsFromTable.length}`)
+                
+                retryNoteUrls = retryNoteUrlsFromTable
+                if (retryNoteUrls.length > 0) {
+                  console.log(`博主 ${bloggerId} 将优先补爬 ${retryNoteUrls.length} 条笔记详情`)
+                }
               } else {
                 console.log(`未找到博主 ${bloggerId} 的笔记表，跳过去重读取`)
               }
@@ -415,7 +484,8 @@ export class FeishuHandler {
           taskType: 'user',
           params: {
             userUrl: userUrl,
-            existingNoteIds
+            existingNoteIds,
+            retryNoteUrls
           },
           saveOptions: {
             mode: 'excel',
@@ -440,8 +510,6 @@ export class FeishuHandler {
           
           // 启动爬虫任务
           pythonBridge.start(spiderConfig, (message) => {
-            console.log(`爬虫消息: ${JSON.stringify(message)}`)
-            
             // 处理不同类型的消息
             switch (message.type) {
               case 'done':
@@ -460,7 +528,6 @@ export class FeishuHandler {
                 
                 const currentNoteCount = message.count || 0
                 noteCount = currentNoteCount
-                console.log(`任务完成，API成功: ${apiSuccess}, 消息: ${apiMsg}, 最新笔记数量: ${currentNoteCount}`)
                 if (apiSuccess && previousNoteCount > 0) {
                   console.log(`比较笔记数量: 之前 ${previousNoteCount} 条，当前 ${currentNoteCount} 条`)
                 }
@@ -492,12 +559,12 @@ export class FeishuHandler {
               
               case 'log':
                 // 日志消息，可能包含有用的信息
-                console.log(`日志: ${message.message}`)
+                // 只输出到日志文件，不输出到控制台
                 break
               
               case 'progress':
                 // 进度消息，更新进度
-                console.log(`进度: ${message.progress}%`)
+                // 只输出到日志文件，不输出到控制台
                 break
               
               default:
@@ -513,11 +580,15 @@ export class FeishuHandler {
           console.log(`✓ 成功读取博主 ${bloggerId} 的笔记列表，共 ${notesResult.data?.length || 0} 条笔记`)
           console.log(`=== 博主笔记列表读取完成 ===`)
           
+          const latestCount = notesResult.noteCount ?? 0
+          const updateCount = Math.max(latestCount - previousNoteCount, 0)
           return {
             success: true,
             data: notesResult.data || [],
             user: notesResult.user,
             noteCount: notesResult.noteCount,
+            previousNoteCount,
+            updateCount,
             message: notesResult.message
           }
         } else {
@@ -525,6 +596,8 @@ export class FeishuHandler {
           console.error('错误详情:', notesResult.error)
           return {
             success: false,
+            previousNoteCount,
+            updateCount: 0,
             error: notesResult.error || '读取博主笔记列表失败'
           }
         }
@@ -533,6 +606,8 @@ export class FeishuHandler {
         console.error('错误详情:', error)
         return {
           success: false,
+          previousNoteCount: 0,
+          updateCount: 0,
           error: error instanceof Error ? error.message : '读取博主笔记列表失败'
         }
       }
@@ -691,70 +766,6 @@ export class FeishuHandler {
       tags?: Array<string>
     }>) => {
       try {
-        // 测试阶段：先将数据备份到本地Excel
-        console.log(`=== 测试阶段：开始将数据备份到本地Excel ===`)
-        
-        // 创建Excel工作簿
-        const workbook = XLSX.utils.book_new()
-        
-        // 添加博主信息汇总表
-        const summaryTimestamp = new Date().toISOString()
-        const bloggerSummaryData = bloggerData.map(blogger => ({
-          '博主ID': blogger.bloggerId,
-          '分享链接': blogger.shareUrl,
-          '用户名': blogger.user?.nickname || '',
-          '头像URL': blogger.user?.avatar || '',
-          '小红书号': blogger.user?.uniqueId || '',
-          '性别': blogger.user?.gender || '',
-          'IP地址': blogger.user?.ipLocation || '',
-          '介绍': blogger.user?.desc || '',
-          '关注数量': blogger.user?.followingCount || 0,
-          '粉丝数量': blogger.user?.followerCount || 0,
-          '作品被赞数量': blogger.user?.likedCount || 0,
-          '作品收藏数量': blogger.user?.collectedCount || 0,
-          '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
-          '笔记数量': (blogger.noteCount ?? blogger.notes?.length) || 0,
-          '处理时间': summaryTimestamp
-        }))
-        
-        // 创建汇总sheet
-        const summaryWorksheet = XLSX.utils.json_to_sheet(bloggerSummaryData)
-        XLSX.utils.book_append_sheet(workbook, summaryWorksheet, '博主信息汇总')
-        
-        // 为每个博主创建一个sheet
-        for (const blogger of bloggerData) {
-          // 准备sheet名称，最多31个字符
-          const sheetName = `博主_${blogger.bloggerId}`.substring(0, 31)
-          
-          // 准备笔记数据，转换为适合Excel的格式
-          const notesData = formatNotesForExcel(blogger.notes)
-          
-          if (notesData.length === 0) {
-            console.log(`博主 ${blogger.bloggerId} 没有笔记数据，跳过创建sheet`)
-            continue
-          }
-          
-          // 创建sheet
-          const worksheet = XLSX.utils.json_to_sheet(notesData)
-          XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
-          
-          console.log(`成功为博主 ${blogger.bloggerId} 创建本地Excel sheet: ${sheetName}`)
-        }
-        
-        // 生成文件路径 - 使用项目tmp-config目录
-        const projectRoot = process.cwd()
-        const excelBasePath = path.join(projectRoot, 'tmp-config', 'excel_datas')
-        if (!fs.existsSync(excelBasePath)) {
-          fs.mkdirSync(excelBasePath, { recursive: true })
-        }
-        const filePath = `${excelBasePath}/feishu_backup_${Date.now()}.xlsx`
-        
-        // 写入Excel文件
-        XLSX.writeFile(workbook, filePath)
-        
-        console.log(`✓ 数据已成功备份到本地Excel: ${filePath}`)
-        console.log(`=== 本地Excel备份完成 ===`)
-        
         // 继续写入飞书数据
         console.log(`=== 开始写入飞书表格数据 ===`)
         console.log(`表格链接: ${tableUrl}`)
@@ -767,8 +778,7 @@ export class FeishuHandler {
         if (!config.appId || !config.appSecret) {
           return {
             success: false,
-            error: '飞书API配置不完整，请先在设置中配置App ID和App Secret',
-            backupFilePath: filePath // 返回备份文件路径
+            error: '飞书API配置不完整，请先在设置中配置App ID和App Secret'
           }
         }
         
@@ -780,8 +790,7 @@ export class FeishuHandler {
         if (type !== 'base') {
           return {
             success: false,
-            error: '当前仅支持飞书多维表格写入',
-            backupFilePath: filePath // 返回备份文件路径
+            error: '当前仅支持飞书多维表格写入'
           }
         }
         
@@ -832,29 +841,7 @@ export class FeishuHandler {
         
         console.log(`✓ 目标表格存在: ${targetTable.name} (${targetTable.table_id})`)
         
-        // 4. 准备写入数据
-        const records = bloggerData.map(blogger => ({
-          fields: {
-            '博主ID': blogger.bloggerId,
-            '分享链接': blogger.shareUrl,
-            '用户名': blogger.user?.nickname || '',
-            '头像URL': blogger.user?.avatar || '',
-            '小红书号': blogger.user?.uniqueId || '',
-            '性别': blogger.user?.gender || '',
-            'IP地址': blogger.user?.ipLocation || '',
-            '介绍': blogger.user?.desc || '',
-            '关注数量': blogger.user?.followingCount || 0,
-            '粉丝数量': blogger.user?.followerCount || 0,
-            '作品被赞数量': blogger.user?.likedCount || 0,
-            '作品收藏数量': blogger.user?.collectedCount || 0,
-            '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
-            '笔记数量': (blogger.noteCount ?? blogger.notes?.length) || 0,
-            '处理时间': summaryTimestamp
-          }
-        }))
-        
-        console.log(`准备写入 ${records.length} 条记录`)
-        console.log('写入数据:', records[0])
+        // 4. 先检查并初始化汇总表字段，稍后写入汇总数据
         
         // 5. 调用列出字段API获取表格实际字段名
         console.log('=== 获取表格字段信息 ===')
@@ -1018,96 +1005,152 @@ export class FeishuHandler {
         const searchUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/search`
         console.log('调用搜索记录API地址:', searchUrl)
         
-        const searchResponse = await fetch(searchUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            page_size: 1000, // 增加分页大小，获取更多记录
-            sort: [{
-              field_name: 'blogger_id',
-              order: 'asc'
-            }]
-          })
-        })
+        const allExistingRecords: any[] = []
+        let hasMore = true
+        let pageToken = ''
+        let pageIndex = 1
+        const maxPages = 50
+        let sameTokenCount = 0
+        const maxSameTokenCount = 3
         
-        const searchResponseText = await searchResponse.text()
-        console.log('搜索记录API响应:', searchResponse.status, searchResponseText)
+        while (hasMore && pageIndex <= maxPages) {
+          const searchResponse = await fetchWithTimeout(searchUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              page_size: 1000,
+              page_token: pageToken,
+              field_names: ['*', '_created_time', '_modified_time'],
+              sort: [{
+                field_name: 'blogger_id',
+                order: 'asc'
+              }]
+            })
+          })
+          
+          const searchResponseText = await searchResponse.text()
+          console.log(`搜索记录API响应(第 ${pageIndex} 页):`, searchResponse.status, searchResponseText)
+          
+          if (!searchResponse.ok) {
+            console.warn(`获取现有记录失败: ${searchResponseText}`)
+            break
+          }
+          
+          const searchData = JSON.parse(searchResponseText)
+          const existingRecords = searchData?.data?.items || []
+          allExistingRecords.push(...existingRecords)
+          
+          console.log(`第 ${pageIndex} 页获取 ${existingRecords.length} 条记录，累计 ${allExistingRecords.length} 条`)
+          
+          hasMore = !!searchData?.data?.has_more
+          const nextPageToken = searchData?.data?.page_token || ''
+          
+          if (!hasMore) {
+            break
+          }
+          
+          if (pageToken === nextPageToken) {
+            sameTokenCount += 1
+            if (sameTokenCount >= maxSameTokenCount) {
+              console.warn('pageToken连续未变化，停止翻页')
+              break
+            }
+          } else {
+            sameTokenCount = 0
+          }
+          
+          pageToken = nextPageToken
+          pageIndex += 1
+        }
+        
+        if (pageIndex > maxPages) {
+          console.warn(`分页次数超过 ${maxPages} 页，停止获取`) 
+        }
         
         // 收集已存在的博主ID和对应的record_id
-        const existingBloggerMap = new Map<string, string>()
-        let existingRecords: any[] = []
+        let existingBloggerMap = new Map<string, string>()
+        let existingBloggerFields = new Map<string, any>()
+        const recordIdsToDelete = new Set<string>()
+        const validRecords: any[] = []
         
-        if (searchResponse.ok) {
-          const searchData = JSON.parse(searchResponseText)
-          existingRecords = searchData?.data?.items || []
-          
-          console.log(`共找到 ${existingRecords.length} 条现有记录`)
-        console.log('现有记录详情:', existingRecords)
-          
-          // 构建博主ID到record_id的映射
-          existingRecords.forEach((record: any, index: number) => {
-            // 检查record结构
-            console.log(`处理第 ${index + 1} 条现有记录:`, record)
-            const fields = record.fields || {}
-            console.log(`记录字段:`, fields)
-            
-            // 正确提取博主ID，处理不同格式
-            let bloggerId = ''
-            const rawBloggerId = fields?.blogger_id || fields?.['博主ID']
-            
-            if (rawBloggerId) {
-              if (Array.isArray(rawBloggerId)) {
-                // 处理数组格式，如 [{"text": "496704588", "type": "text"}]
-                if (rawBloggerId.length > 0 && rawBloggerId[0]?.text) {
-                  bloggerId = rawBloggerId[0].text
-                }
-              } else if (typeof rawBloggerId === 'string') {
-                // 直接字符串格式
-                bloggerId = rawBloggerId
-              } else if (rawBloggerId.text) {
-                // 对象格式 {"text": "496704588"}
-                bloggerId = rawBloggerId.text
-              }
+        const extractBloggerId = (fields: any): string => {
+          const rawBloggerId = fields?.blogger_id || fields?.['博主ID']
+          if (!rawBloggerId) return ''
+          if (Array.isArray(rawBloggerId)) {
+            if (rawBloggerId.length > 0 && rawBloggerId[0]?.text) {
+              return String(rawBloggerId[0].text).trim()
             }
-            
-            console.log(`提取的博主ID: "${bloggerId}"`)
-            if (bloggerId) {
-              existingBloggerMap.set(bloggerId, record.record_id)
-              console.log(`现有博主: ${bloggerId} -> ${record.record_id}`)
-            }
-          })
-        console.log(`构建的博主映射: ${JSON.stringify(Array.from(existingBloggerMap.entries()))}`)
+            return String(rawBloggerId).trim()
+          }
+          if (typeof rawBloggerId === 'object' && rawBloggerId.text) {
+            return String(rawBloggerId.text).trim()
+          }
+          return String(rawBloggerId).trim()
+        }
+        
+        if (allExistingRecords.length > 0) {
+          console.log(`共找到 ${allExistingRecords.length} 条现有记录`)
+          console.log('现有记录详情:', allExistingRecords)
           
           // 查找需要删除的记录：
           // 1. 空记录（所有字段都为空）
           // 2. 包含JSON文本的旧记录（通常是单字段且值为JSON字符串）
-          const recordsToDelete = existingRecords.filter((record: any) => {
+          allExistingRecords.forEach((record: any) => {
             const fields = record.fields || {}
             const values = Object.values(fields)
             
-            // 检查是否为空记录
             const isEmpty = values.every((value: any) => !value || (typeof value === 'string' && value.trim() === ''))
-            
-            // 检查是否为包含JSON的旧记录
             const hasJsonText = values.some((value: any) => {
               if (typeof value === 'string') {
-                // 检查是否包含JSON结构特征
                 return value.startsWith('{') && value.endsWith('}') && (value.includes('博主ID') || value.includes('分享链接') || value.includes('笔记数量'))
               }
               return false
             })
             
-            return isEmpty || hasJsonText
+            if (isEmpty || hasJsonText) {
+              recordIdsToDelete.add(record.record_id)
+            } else {
+              validRecords.push(record)
+            }
           })
           
-          if (recordsToDelete.length > 0) {
-            console.log(`发现 ${recordsToDelete.length} 条需要删除的旧记录（空记录或JSON文本记录）`)
-            const recordIdsToDelete = recordsToDelete.map((record: any) => record.record_id)
+          // 根据博主ID去重，保留最新一条记录
+          const bloggerIdToRecords = new Map<string, any[]>()
+          validRecords.forEach((record: any) => {
+            const bloggerId = extractBloggerId(record.fields || {})
+            if (!bloggerId) return
+            if (!bloggerIdToRecords.has(bloggerId)) {
+              bloggerIdToRecords.set(bloggerId, [])
+            }
+            bloggerIdToRecords.get(bloggerId)!.push(record)
+          })
+          
+          bloggerIdToRecords.forEach((records, bloggerId) => {
+            if (records.length === 1) {
+              existingBloggerMap.set(bloggerId, records[0].record_id)
+              existingBloggerFields.set(bloggerId, records[0].fields || {})
+              return
+            }
             
-            // 批量删除旧记录
+            records.sort((a, b) => {
+              const timeA = new Date(a._modified_time || a._created_time || 0).getTime()
+              const timeB = new Date(b._modified_time || b._created_time || 0).getTime()
+              return timeB - timeA
+            })
+            
+            const recordToKeep = records[0]
+            existingBloggerMap.set(bloggerId, recordToKeep.record_id)
+            existingBloggerFields.set(bloggerId, recordToKeep.fields || {})
+            records.slice(1).forEach(record => recordIdsToDelete.add(record.record_id))
+          })
+          
+          console.log(`构建的博主映射: ${JSON.stringify(Array.from(existingBloggerMap.entries()))}`)
+          
+          if (recordIdsToDelete.size > 0) {
+            console.log(`发现 ${recordIdsToDelete.size} 条需要删除的旧记录（空记录、JSON文本或重复记录）`)
             const deleteUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/batch_delete`
             const deleteResponse = await fetch(deleteUrl, {
               method: 'POST',
@@ -1116,7 +1159,7 @@ export class FeishuHandler {
                 'Content-Type': 'application/json'
               },
               body: JSON.stringify({
-                records: recordIdsToDelete
+                records: Array.from(recordIdsToDelete)
               })
             })
             
@@ -1124,7 +1167,7 @@ export class FeishuHandler {
             console.log(`删除旧记录API响应: ${deleteResponse.status} ${deleteResponseText}`)
             
             if (deleteResponse.ok) {
-              console.log(`成功删除 ${recordsToDelete.length} 条旧记录`)
+              console.log(`成功删除 ${recordIdsToDelete.size} 条旧记录`)
             } else {
               console.warn(`删除旧记录失败: ${deleteResponseText}`)
             }
@@ -1132,7 +1175,7 @@ export class FeishuHandler {
             console.log('没有发现需要删除的旧记录')
           }
         } else {
-          console.warn(`获取现有记录失败: ${searchResponseText}`)
+          console.log('未找到任何现有记录')
         }
         
         // 收集所有可用字段
@@ -1146,173 +1189,9 @@ export class FeishuHandler {
           console.log(`可用字段: "${field.ui_name || field.field_name}" -> "${apiFieldName}"`)
         })
         
-        // 6. 准备写入数据，使用统一的字段映射表
-        console.log('=== 准备写入数据 ===')
-        const mappedRecords = records.map((record, index) => {
-          const mappedFields: any = {}  
-          const blogger = record.fields  
-          
-          console.log(`处理第 ${index + 1} 条记录，原始数据:`, blogger)
-          
-          // 使用统一的字段映射表将中文标题转换为API字段名
-          for (const [chineseName, value] of Object.entries(blogger)) {
-            const apiFieldName = fieldNameMapping[chineseName]
-            if (apiFieldName) {
-              if (availableFields.includes(apiFieldName)) {
-                // 将所有数值类型转换为字符串，因为飞书API可能要求文本字段必须是字符串格式
-                let fieldValue = value
-                if (typeof fieldValue === 'number') {
-                  fieldValue = String(fieldValue)
-                } else if (fieldValue === null || fieldValue === undefined) {
-                  fieldValue = ''
-                }
-                
-                mappedFields[apiFieldName] = fieldValue
-                console.log(`字段映射成功: "${chineseName}" -> "${apiFieldName}" = ${fieldValue} (类型: ${typeof fieldValue})`)
-              } else {
-                console.warn(`跳过表格中不存在的字段: "${chineseName}" -> "${apiFieldName}"`)
-              }
-            } else {
-              console.warn(`跳过字段: "${chineseName}" 没有对应的API字段映射`)
-            }
-          }
-          
-          if (Object.keys(mappedFields).length === 0) {
-            console.warn(`警告：第 ${index + 1} 条记录没有有效的字段，将跳过该记录`)
-            return null
-          }
-          
-          console.log(`映射后的数据:`, mappedFields)
-          return { fields: mappedFields }
-        }).filter((record): record is { fields: any } => record !== null) // 过滤掉无效记录
-        
-        if (mappedRecords.length === 0) {
-          throw new Error('没有可写入的有效数据，请检查表格字段配置')
-        }
-        
-        console.log(`映射后共 ${mappedRecords.length} 条记录需要处理`)
-        console.log('映射后数据示例:', mappedRecords[0])
-        
-        // 分离更新记录和插入记录
-        console.log('=== 分离更新和插入记录 ===')
-        const updateRecords: any[] = []
-        const insertRecords: any[] = []
-        
-        mappedRecords.forEach((record, index) => {
-          const bloggerId = record.fields.blogger_id
-          if (bloggerId && existingBloggerMap.has(bloggerId)) {
-            // 需要更新的记录
-            const recordId = existingBloggerMap.get(bloggerId)!
-            updateRecords.push({
-              record_id: recordId,
-              fields: record.fields
-            })
-            console.log(`记录 ${index + 1} (博主ID: ${bloggerId}) -> 更新 (${recordId})`)
-          } else {
-            // 需要插入的记录
-            insertRecords.push(record)
-            console.log(`记录 ${index + 1} (博主ID: ${bloggerId || '新博主'}) -> 插入`)
-          }
-        })
-        
-        console.log(`\n需要更新 ${updateRecords.length} 条记录，需要插入 ${insertRecords.length} 条记录`)
-        
-        // 初始化结果统计
+        let summaryResult: any = { data: { record_ids: [] } }
         let totalUpdated = 0
         let totalInserted = 0
-        
-        // 8. 先处理更新记录
-        if (updateRecords.length > 0) {
-          console.log('\n=== 开始处理更新记录 ===')
-          const updateUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/batch_update`
-          console.log('调用批量更新API地址:', updateUrl)
-          
-          const updateResponse = await fetch(updateUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              records: updateRecords
-            })
-          })
-          
-          const updateResponseText = await updateResponse.text()
-          console.log('批量更新API响应:', updateResponse.status, updateResponse.statusText, updateResponseText)
-          
-          if (updateResponse.ok) {
-            const updateResult = JSON.parse(updateResponseText)
-            // 飞书API返回的是records数组，而非record_ids数组
-            const updatedRecords = updateResult.data?.records || []
-            totalUpdated = updatedRecords.length || 0
-            // 构建record_ids数组，用于后续结果返回
-            if (updateResult.data) {
-              updateResult.data.record_ids = updatedRecords.map((record: any) => record.record_id)
-            }
-            console.log(`✓ 成功更新 ${totalUpdated} 条记录`)
-          } else {
-            console.warn(`更新记录失败，将继续处理插入记录: ${updateResponseText}`)
-          }
-        }
-        
-        // 9. 再处理插入记录
-        let result: any = { data: { record_ids: [] } }
-        if (insertRecords.length > 0) {
-          console.log('\n=== 开始处理插入记录 ===')
-          const insertUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/batch_create`
-          console.log('调用批量插入API地址:', insertUrl)
-          
-          const insertResponse = await fetch(insertUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              records: insertRecords
-            })
-          })
-          
-          const insertResponseText = await insertResponse.text()
-          console.log('批量插入API响应:', insertResponse.status, insertResponse.statusText, insertResponseText)
-          
-          if (!insertResponse.ok) {
-            // 解析错误响应，提供更详细的错误信息
-            let errorMsg = `插入失败: ${insertResponse.status} ${insertResponse.statusText}`
-            try {
-              const errorData = JSON.parse(insertResponseText)
-              if (errorData?.error?.message) {
-                errorMsg += ` - ${errorData.error.message}`
-              }
-              if (errorData?.code) {
-                errorMsg += ` (错误码: ${errorData.code})`
-              }
-              // 特殊处理403和字段不存在错误
-              if (errorData?.code === 91403) {
-                errorMsg += '\n建议：请将应用添加为多维表格协作者并授予读写权限'
-              } else if (errorData?.code === 1254045) {
-                errorMsg += '\n建议：请检查表格字段配置，确保字段名称正确'
-              }
-            } catch (err) {
-              console.warn('解析飞书错误响应失败:', err)
-            }
-            throw new Error(errorMsg)
-          }
-          
-          result = JSON.parse(insertResponseText)
-          // 飞书API返回的是records数组，而非record_ids数组
-          const insertedRecords = result.data?.records || []
-          totalInserted = insertedRecords.length || 0
-          // 构建record_ids数组，用于后续结果返回
-          result.data.record_ids = insertedRecords.map((record: any) => record.record_id)
-          console.log(`✓ 成功插入 ${totalInserted} 条记录`)
-        }
-        
-        const totalProcessed = totalUpdated + totalInserted
-        console.log(`\n✓ 飞书表格数据处理完成，共处理 ${totalProcessed} 条记录（更新 ${totalUpdated} 条，插入 ${totalInserted} 条）`)
-        
-        console.log(`✓ 飞书表格数据写入成功，共写入 ${result.data?.record_ids?.length || 0} 条记录到博主信息汇总表`)
         
         // 9. 处理博主笔记数据 - 每个博主的笔记数据写入独立的数据表
         console.log('=== 开始处理博主笔记数据 ===')
@@ -1365,7 +1244,8 @@ export class FeishuHandler {
                   { field_name: "author_name", type: 1 }, // 作者名称
                   { field_name: "author_avatar", type: 1 }, // 作者头像
                   { field_name: "ip_location", type: 1 }, // IP归属地
-                  { field_name: "crawl_time", type: 1 } // 爬取时间
+                  { field_name: "crawl_time", type: 1 }, // 爬取时间
+                  { field_name: "crawl_status", type: 1 } // 爬取状态
                 ]
               }
             }
@@ -1438,20 +1318,123 @@ export class FeishuHandler {
               }
             })
             console.log(`${noteTableName} 数据表可用字段:`, Array.from(availableNoteFields.keys()))
+
+            if (!availableNoteFields.has('crawl_status') && !availableNoteFields.has('爬取状态')) {
+              console.log(`${noteTableName} 缺少爬取状态字段，准备创建`)
+              const createFieldUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/fields`
+              const createResponse = await fetch(createFieldUrl, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  field_name: 'crawl_status',
+                  ui_name: '爬取状态',
+                  type: 1,
+                  property: null
+                })
+              })
+
+              const createResponseText = await createResponse.text()
+              console.log(`创建爬取状态字段API响应: ${createResponse.status} ${createResponseText}`)
+
+              if (createResponse.ok) {
+                const createdField = JSON.parse(createResponseText).data
+                if (createdField) {
+                  if (createdField.field_name) {
+                    availableNoteFields.set(createdField.field_name, createdField)
+                  }
+                  if (createdField.ui_name) {
+                    availableNoteFields.set(createdField.ui_name, createdField)
+                  }
+                }
+              } else {
+                console.warn(`创建爬取状态字段失败: ${createResponseText}`)
+              }
+            }
             
-            // 4. 准备当前博主的笔记数据
-            const notes = blogger.notes || []
+            // 4. 准备当前博主的笔记数据，并根据note_id去重
+            let notes = blogger.notes || []
             console.log(`博主 ${blogger.bloggerId} 共有 ${notes.length} 条笔记需要处理`)
             
+            // 去重逻辑：根据note_id去重，保留有content的，有多个都有content只保留一个
+            const uniqueNotesMap = new Map<string, any>()
+            
+            notes.forEach(note => {
+              const noteId = note?.note_id || note?.node_id || note?.id || ''
+              if (!noteId) return
+              
+              // 获取当前note的content
+              const noteContent = note?.desc || note?.content || ''
+              const hasContent = noteContent && noteContent.trim() !== ''
+              
+              // 检查是否已存在该note_id的笔记
+              if (uniqueNotesMap.has(noteId)) {
+                // 已存在，检查现有笔记是否有content
+                const existingNote = uniqueNotesMap.get(noteId)
+                const existingHasContent = (existingNote?.desc || existingNote?.content || '').trim() !== ''
+                
+                // 如果现有笔记没有content，而当前笔记有content，则更新
+                if (!existingHasContent && hasContent) {
+                  uniqueNotesMap.set(noteId, note)
+                }
+              } else {
+                // 不存在，直接添加
+                uniqueNotesMap.set(noteId, note)
+              }
+            })
+            
+            // 转换为数组
+            notes = Array.from(uniqueNotesMap.values())
+            console.log(`博主 ${blogger.bloggerId} 去重后剩余 ${notes.length} 条笔记`)
+            
             if (notes.length > 0) {
-              // 5. 准备笔记记录，直接使用英文键名，无需映射
-              const noteRecords = notes.map(note => {
+              // 5. 准备笔记记录，先格式化笔记数据，确保键名与飞书数据表字段匹配
+              const formattedNotes = notes.map(note => {
+                // 使用与生成Excel相同的格式化逻辑，确保键名统一
+                const imageList = toStringArray(note?.image_list || note?.images || note?.imageList)
+                const tags = toStringArray(note?.tags)
+                const firstImage = imageList.length > 0 ? imageList[0] : (note?.cover_image || note?.coverImage || note?.cover || '')
+                
+                // 统一键名格式，与飞书数据表字段名匹配
+                return {
+                  note_id: note?.note_id || note?.node_id || note?.id || '',
+                  note_url: note?.note_url || note?.url || '',
+                  note_type: note?.note_type || note?.type || '',
+                  title: note?.title || '',
+                  content: note?.desc || note?.content || '',
+                  cover_image: note?.video_cover || note?.cover_image || firstImage || '',
+                  video_url: note?.video_addr || note?.video_url || note?.videoUrl || '',
+                  image_list: imageList,
+                  publish_time: note?.upload_time || note?.publish_time || note?.publishTime || '',
+                  liked_count: note?.liked_count ?? note?.likes ?? 0,
+                  collected_count: note?.collected_count ?? note?.favorites ?? 0,
+                  comment_count: note?.comment_count ?? note?.comments ?? 0,
+                  share_count: note?.share_count ?? note?.shares ?? 0,
+                  view_count: note?.view_count ?? note?.views ?? 0,
+                  tags: tags,
+                  author_id: note?.author_id || note?.user_id || note?.author?.id || '',
+                  author_name: note?.author_name || note?.nickname || note?.author?.name || '',
+                  author_avatar: note?.author_avatar || note?.avatar || note?.author?.avatar || '',
+                  ip_location: note?.ip_location || note?.ipLocation || '',
+                  crawl_time: note?.crawl_time || note?.crawlTime || '',
+                  crawl_status: note?.crawl_status || note?.crawlStatus || ''
+                }
+              })
+              
+              // 6. 准备笔记记录，写入数据表中存在的字段
+              const noteRecords = formattedNotes.map(note => {
                 const noteFields: any = {}
                 
                 // 遍历笔记字段，只写入数据表中存在的字段
                 Object.entries(note).forEach(([fieldName, value]) => {
-                  // 直接使用英文键名，因为blogger.notes中的笔记对象已经是英文键名格式
-                  if (availableNoteFields.has(fieldName)) {
+                  let targetFieldName = fieldName
+                  if (fieldName === 'note_id' && !availableNoteFields.has(fieldName) && availableNoteFields.has('node_id')) {
+                    targetFieldName = 'node_id'
+                  }
+
+                  if (availableNoteFields.has(targetFieldName)) {
                     // 将所有数值类型转换为字符串，因为飞书API可能要求文本字段必须是字符串格式
                     let fieldValue = value
                     if (typeof fieldValue === 'number') {
@@ -1463,7 +1446,7 @@ export class FeishuHandler {
                       fieldValue = ''
                     }
                     
-                    noteFields[fieldName] = fieldValue
+                    noteFields[targetFieldName] = fieldValue
                   }
                 })
                 
@@ -1472,94 +1455,218 @@ export class FeishuHandler {
               
               console.log(`准备写入 ${noteRecords.length} 条笔记记录到 ${noteTableName}，示例:`, noteRecords[0])
               
-              // 6. 写入笔记数据前，先查询已存在的笔记id，用于去重
-              const searchNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records/search`
-              const existingNoteIds = new Set<string>()
+              // 6. 写入笔记数据前，先查询飞书中是否存在重复记录
+              console.log(`=== 检查飞书中的现有记录 ===`)
+              
+              const listNotesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records`
+              
+              // 首先，获取所有已存在的记录（包含重复的note_id）
+              const allExistingRecords: any[] = []
               let hasMore = true
               let pageToken = ''
+              let retryCount = 0
+              const maxRetries = 3
               
               // 处理分页，确保获取到所有的笔记记录
-              while (hasMore) {
-                const searchNotesResponse = await fetch(searchNotesUrl, {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({
-                    page_size: 1000,
-                    page_token: pageToken,
-                    sort: [{ field_name: 'note_id', order: 'asc' }]
-                  })
-                })
-                
-                if (!searchNotesResponse.ok) {
-                  console.warn(`获取已存在笔记ID失败，将跳过去重: ${await searchNotesResponse.text()}`)
-                  break
-                }
-                
-                const searchNotesResult = JSON.parse(await searchNotesResponse.text())
-                const existingRecords = searchNotesResult?.data?.items || []
-                
-                console.log(`获取到第 ${pageToken ? '下' : '一'}页笔记记录，共 ${existingRecords.length} 条`)
-                
-                existingRecords.forEach((record: any, index: number) => {
-                  console.log(`处理第 ${index + 1} 条现有记录:`, record)
-                  const fields = record.fields || {}
-                  
-                  // 提取笔记ID，处理多种可能的格式
-                  let noteId = ''
-                  const rawNoteId = fields?.note_id || fields?.['笔记ID']
-                  
-                  console.log(`原始笔记ID:`, rawNoteId)
-                  
-                  if (rawNoteId) {
-                    if (Array.isArray(rawNoteId)) {
-                      // 处理数组格式，如 [{ "text": "note123", "type": "text" }]
-                      if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
-                        noteId = rawNoteId[0].text
-                      } else {
-                        // 尝试其他数组格式
-                        noteId = String(rawNoteId)
-                      }
-                    } else if (typeof rawNoteId === 'object' && rawNoteId.text) {
-                      // 处理对象格式，如 { "text": "note123" }
-                      noteId = rawNoteId.text
-                    } else {
-                      // 直接字符串或数值格式
-                      noteId = String(rawNoteId)
+              while (hasMore && retryCount < maxRetries) {
+                try {
+                  const listUrl = new URL(listNotesUrl)
+                  listUrl.searchParams.set('page_size', '1000')
+                  if (pageToken) {
+                    listUrl.searchParams.set('page_token', pageToken)
+                  }
+
+                  const listResponse = await fetchWithTimeout(listUrl.toString(), {
+                    method: 'GET',
+                    headers: {
+                      'Authorization': `Bearer ${accessToken}`,
+                      'Content-Type': 'application/json'
                     }
+                  })
+                  
+                  if (!listResponse.ok) {
+                    console.warn(`获取所有记录失败，将重试: ${await listResponse.text()}`)
+                    retryCount++
+                    continue
+                  }
+
+                  const listResult = JSON.parse(await listResponse.text())
+                  if (listResult?.code !== 0 || !listResult?.data) {
+                    console.warn(`获取所有记录失败，将重试: ${listResult?.msg || '未知错误'}`)
+                    retryCount++
+                    continue
+                  }
+                  const records = listResult?.data?.items || []
+                  allExistingRecords.push(...records)
+
+                  hasMore = !!listResult?.data?.has_more
+                  const nextPageToken = listResult?.data?.page_token || ''
+                  
+                  if (!hasMore || pageToken === nextPageToken) {
+                    break
                   }
                   
-                  noteId = noteId.trim()
-                  console.log(`提取到笔记ID: "${noteId}"`)
-                  
-                  if (noteId) {
-                    existingNoteIds.add(noteId)
-                    console.log(`添加到已存在笔记ID集合: ${noteId}`)
-                  }
-                })
-                
-                // 检查是否还有更多数据
-                hasMore = !!searchNotesResult?.data?.has_more
-                pageToken = searchNotesResult?.data?.page_token || ''
-                
-                // 如果没有更多数据，或者pageToken为空，跳出循环
-                if (!hasMore || !pageToken) {
-                  break
+                  pageToken = nextPageToken
+                  retryCount = 0 // 重置重试计数
+                } catch (error) {
+                  console.warn(`获取记录时发生错误，将重试: ${error}`)
+                  retryCount++
                 }
               }
               
-              console.log(`共获取到 ${existingNoteIds.size} 个已存在的笔记ID`)
-              console.log(`已存在笔记ID集合:`, Array.from(existingNoteIds))
+              console.log(`博主 ${blogger.bloggerId} 表 ${noteTableName} 当前记录总数: ${allExistingRecords.length}`)
               
-              // 7. 过滤掉已经存在的笔记，只保留新笔记
-              const newNoteRecords = noteRecords.filter((record, index) => {
+              // 7. 清理飞书中的重复记录
+              console.log(`=== 清理飞书中的重复记录 ===`)
+              const noteIdToRecordsMap = new Map<string, any[]>()
+              const extractRecordNoteId = (fields: any): string => {
+                const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id'] || fields?.['笔记ID']
+                if (!rawNoteId) return ''
+                if (Array.isArray(rawNoteId)) {
+                  if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
+                    return String(rawNoteId[0].text).trim()
+                  }
+                  return String(rawNoteId).trim()
+                }
+                if (typeof rawNoteId === 'object' && rawNoteId.text) {
+                  return String(rawNoteId.text).trim()
+                }
+                return String(rawNoteId).trim()
+              }
+              
+              // 按note_id分组所有记录
+              allExistingRecords.forEach(record => {
+                const fields = record.fields || {}
+                const noteId = extractRecordNoteId(fields)
+                if (noteId) {
+                  if (!noteIdToRecordsMap.has(noteId)) {
+                    noteIdToRecordsMap.set(noteId, [])
+                  }
+                  noteIdToRecordsMap.get(noteId)!.push(record)
+                }
+              })
+              
+              // 删除每组中多余的记录，保留最新的一条（根据_modified_time或_created_time）
+              const recordsToDelete: string[] = []
+              noteIdToRecordsMap.forEach((records, noteId) => {
+                if (records.length > 1) {
+                  console.log(`发现 ${records.length} 条重复的笔记记录，note_id: ${noteId}`)
+                  
+                  // 按修改时间降序排序，保留最新的一条
+                  records.sort((a, b) => {
+                    const timeA = new Date(a._modified_time || a._created_time || 0).getTime()
+                    const timeB = new Date(b._modified_time || b._created_time || 0).getTime()
+                    return timeB - timeA // 降序排序，最新的在前面
+                  })
+                  
+                  // 保留第一条（最新的），其余的加入删除列表
+                  const recordsToKeep = records[0]
+                  const recordsToRemove = records.slice(1)
+                  recordsToRemove.forEach(record => {
+                    recordsToDelete.push(record.record_id)
+                  })
+                  
+                  console.log(`保留最新的记录: ${recordsToKeep.record_id}，删除 ${recordsToRemove.length} 条旧记录`)
+                }
+              })
+              
+              // 批量删除重复记录
+              if (recordsToDelete.length > 0) {
+                console.log(`=== 批量删除 ${recordsToDelete.length} 条重复记录 ===`)
+                const deleteUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records/batch_delete`
+                
+                // 分批删除，每批最多100条
+                const batchSize = 100
+                for (let i = 0; i < recordsToDelete.length; i += batchSize) {
+                  const batchIds = recordsToDelete.slice(i, i + batchSize)
+                  
+                  try {
+                  const deleteResponse = await fetch(deleteUrl, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({
+                        record_ids: batchIds
+                      })
+                    })
+                    
+                    if (!deleteResponse.ok) {
+                      console.warn(`删除重复记录失败: ${await deleteResponse.text()}`)
+                    } else {
+                      console.log(`✓ 成功删除 ${batchIds.length} 条重复记录`)
+                    }
+                  } catch (error) {
+                    console.warn(`删除重复记录时发生错误: ${error}`)
+                  }
+                }
+              }
+              
+              // 8. 构建最新的note_id到record_id的映射，包含content信息
+              const existingNotesMap = new Map<string, { record_id: string; content: string; crawl_status: string }>()
+              
+              // 重新获取最新的记录，确保数据准确
+              const freshRecords: any[] = []
+              hasMore = true
+              pageToken = ''
+              retryCount = 0
+              
+              while (hasMore && retryCount < maxRetries) {
+                try {
+                  const listUrl = new URL(listNotesUrl)
+                  listUrl.searchParams.set('page_size', '1000')
+                  if (pageToken) {
+                    listUrl.searchParams.set('page_token', pageToken)
+                  }
+
+                  const listResponse = await fetchWithTimeout(listUrl.toString(), {
+                    method: 'GET',
+                    headers: {
+                      'Authorization': `Bearer ${accessToken}`,
+                      'Content-Type': 'application/json'
+                    }
+                  })
+                  
+                  if (!listResponse.ok) {
+                    console.warn(`获取最新记录失败，将重试: ${await listResponse.text()}`)
+                    retryCount++
+                    continue
+                  }
+
+                  const listResult = JSON.parse(await listResponse.text())
+                  if (listResult?.code !== 0 || !listResult?.data) {
+                    console.warn(`获取最新记录失败，将重试: ${listResult?.msg || '未知错误'}`)
+                    retryCount++
+                    continue
+                  }
+                  const records = listResult?.data?.items || []
+                  freshRecords.push(...records)
+
+                  hasMore = !!listResult?.data?.has_more
+                  const nextPageToken = listResult?.data?.page_token || ''
+                  
+                  if (!hasMore || pageToken === nextPageToken) {
+                    break
+                  }
+                  
+                  pageToken = nextPageToken
+                  retryCount = 0 // 重置重试计数
+                } catch (error) {
+                  console.warn(`获取最新记录时发生错误，将重试: ${error}`)
+                  retryCount++
+                }
+              }
+              
+              console.log(`重新获取到 ${freshRecords.length} 条最新的笔记记录`)
+              
+              // 构建映射
+              freshRecords.forEach(record => {
                 const fields = record.fields || {}
                 let noteId = ''
                 
                 // 提取笔记ID，处理多种可能的格式
-                const rawNoteId = fields?.note_id
+                const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id']
                 if (rawNoteId) {
                   if (Array.isArray(rawNoteId)) {
                     // 处理数组格式，如 [{ "text": "note123", "type": "text" }]
@@ -1580,16 +1687,168 @@ export class FeishuHandler {
                 
                 noteId = noteId.trim()
                 
-                console.log(`检查第 ${index + 1} 条待插入笔记: 笔记ID="${noteId}"`)
-                console.log(`笔记ID是否已存在: ${existingNoteIds.has(noteId)}`)
+                if (noteId) {
+                  const content = fields?.content || ''
+                  const crawlStatus = fields?.crawl_status || fields?.['爬取状态'] || ''
+                  existingNotesMap.set(noteId, {
+                    record_id: record.record_id,
+                    content: content,
+                    crawl_status: String(crawlStatus || '').trim()
+                  })
+                }
+              })
+              
+              console.log(`已存在的唯一note_id数量: ${existingNotesMap.size}`)
+              
+              // 9. 分离新笔记和需要更新的笔记
+              console.log(`=== 分离新笔记和需要更新的笔记 ===`)
+              const newNoteRecords: any[] = []
+              const updateNoteRecords: any[] = []
+              
+              // 先对本地笔记进行去重，确保同一note_id只处理一次
+              const localNoteMap = new Map<string, any>()
+              noteRecords.forEach(record => {
+                const fields = record.fields || {}
+                const noteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id'] || ''
+                if (noteId) {
+                  // 如果已有相同note_id，保留有content的
+                  if (!localNoteMap.has(noteId)) {
+                    localNoteMap.set(noteId, record)
+                  } else {
+                    const existingLocalNote = localNoteMap.get(noteId)
+                    const existingHasContent = existingLocalNote.fields?.content && existingLocalNote.fields.content !== ''
+                    const currentHasContent = fields?.content && fields.content !== ''
+                    
+                    if (!existingHasContent && currentHasContent) {
+                      localNoteMap.set(noteId, record)
+                    }
+                  }
+                }
+              })
+              
+              console.log(`本地笔记去重后剩余 ${localNoteMap.size} 条`)
+              
+              // 遍历去重后的本地笔记，决定更新还是插入
+              const isSuccessStatus = (status?: string): boolean => {
+                if (!status) return false
+                const normalized = status.trim()
+                return normalized === '✅' || normalized.toLowerCase() === '成功'
+              }
+
+              localNoteMap.forEach(record => {
+                const fields = record.fields || {}
+                let noteId = ''
                 
-                return noteId && !existingNoteIds.has(noteId)
+                // 提取笔记ID，处理多种可能的格式
+                const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id']
+                if (rawNoteId) {
+                  if (Array.isArray(rawNoteId)) {
+                    // 处理数组格式，如 [{ "text": "note123", "type": "text" }]
+                    if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
+                      noteId = rawNoteId[0].text
+                    } else {
+                      // 尝试其他数组格式
+                      noteId = String(rawNoteId)
+                    }
+                  } else if (typeof rawNoteId === 'object' && rawNoteId.text) {
+                    // 处理对象格式，如 { "text": "note123" }
+                    noteId = rawNoteId.text
+                  } else {
+                    // 直接字符串或数值格式
+                    noteId = String(rawNoteId)
+                  }
+                }
+                
+                noteId = noteId.trim()
+                
+                if (noteId) {
+                  if (existingNotesMap.has(noteId)) {
+                    // 笔记已存在，检查是否需要更新
+                    const existingNote = existingNotesMap.get(noteId)!
+                    const existingStatus = existingNote.crawl_status || ''
+                    const currentStatus = String(fields?.crawl_status || fields?.['爬取状态'] || '').trim()
+                    const needsContentUpdate = (!existingNote.content || existingNote.content === '') && fields?.content && fields.content !== ''
+                    const needsStatusUpdate = !isSuccessStatus(existingStatus) && isSuccessStatus(currentStatus)
+
+                    if (needsContentUpdate || needsStatusUpdate) {
+                      console.log(`笔记ID=${noteId} 需要更新 (content=${needsContentUpdate}, status=${needsStatusUpdate})`)
+                      updateNoteRecords.push({
+                        record_id: existingNote.record_id,
+                        fields: fields
+                      })
+                    } else {
+                      console.log(`笔记ID=${noteId} 已存在且content不为空，无需更新`)
+                    }
+                  } else {
+                    // 新笔记，需要插入
+                    console.log(`笔记ID=${noteId} 新笔记，需要插入`)
+                    newNoteRecords.push(record)
+                  }
+                }
               })
               
               console.log(`过滤后，需要插入 ${newNoteRecords.length} 条新笔记数据到 ${noteTableName}`)
               
+              // 10. 处理需要更新的笔记
+              if (updateNoteRecords.length > 0) {
+                console.log(`需要更新 ${updateNoteRecords.length} 条笔记数据到 ${noteTableName}`)
+                const noteUpdateUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records/batch_update`
+                console.log(`调用更新笔记数据API地址: ${noteUpdateUrl}`)
+                
+                // 分批更新，每批最多500条记录
+                const batchSize = 500
+                let totalUpdatedNotes = 0
+                
+                for (let i = 0; i < updateNoteRecords.length; i += batchSize) {
+                  const batchNotes = updateNoteRecords.slice(i, i + batchSize)
+                  console.log(`更新第 ${Math.floor(i / batchSize) + 1} 批笔记数据到 ${noteTableName}，共 ${batchNotes.length} 条记录`)
+                  
+                  const batchResponse = await fetch(noteUpdateUrl, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${accessToken}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      records: batchNotes
+                    })
+                  })
+                  
+                  const batchResponseText = await batchResponse.text()
+                  console.log(`更新笔记批次API响应: ${batchResponse.status} ${batchResponseText}`)
+                  
+                  if (batchResponse.ok) {
+                    const batchResult = JSON.parse(batchResponseText)
+                    // 飞书API返回的是records数组，而非record_ids数组
+                    const updatedNotes = batchResult.data?.records || []
+                    const batchUpdatedCount = updatedNotes.length || 0
+                    totalUpdatedNotes += batchUpdatedCount
+                    console.log(`✓ 成功更新第 ${Math.floor(i / batchSize) + 1} 批笔记数据到 ${noteTableName}，共 ${batchUpdatedCount} 条记录`)
+                  } else {
+                    // 详细解析错误响应，提供更有用的错误信息
+                    try {
+                      const errorResult = JSON.parse(batchResponseText)
+                      if (errorResult.code === 1254060) {
+                        // TextFieldConvFail 错误，通常是字段值格式问题
+                        console.error(`更新第 ${Math.floor(i / batchSize) + 1} 批笔记数据到 ${noteTableName} 失败: TextFieldConvFail，字段值格式错误`)
+                        console.error(`错误详情: ${errorResult.error?.message || errorResult.msg}`)
+                        console.error(`请检查笔记数据的格式，特别是image_list字段，必须是字符串格式`)
+                      } else {
+                        console.error(`更新第 ${Math.floor(i / batchSize) + 1} 批笔记数据到 ${noteTableName} 失败: ${errorResult.msg || batchResponseText}`)
+                      }
+                    } catch (err) {
+                      console.error(`更新第 ${Math.floor(i / batchSize) + 1} 批笔记数据到 ${noteTableName} 失败，解析错误响应失败: ${err}`)
+                      console.error(`原始错误响应: ${batchResponseText}`)
+                    }
+                  }
+                }
+                
+                console.log(`✓ 笔记数据更新完成，共成功更新 ${totalUpdatedNotes} 条笔记数据到 ${noteTableName}`)
+              }
+              
+              // 11. 处理需要插入的新笔记
               if (newNoteRecords.length > 0) {
-                // 8. 写入笔记数据到独立的数据表
+                // 写入笔记数据到独立的数据表
                 const noteWriteUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records/batch_create`
                 console.log(`调用写入笔记数据API地址: ${noteWriteUrl}`)
                 
@@ -1642,22 +1901,483 @@ export class FeishuHandler {
                 }
                 
                 console.log(`✓ 笔记数据写入完成，共成功写入 ${totalInsertedNotes} 条笔记数据到 ${noteTableName}`)
-              } else {
-                console.log(`博主 ${blogger.bloggerId} 的所有笔记数据都已存在，无需插入`)
+              } else if (updateNoteRecords.length === 0) {
+                console.log(`博主 ${blogger.bloggerId} 的所有笔记数据都已存在且无需更新`)
               }
             } else {
               console.log(`博主 ${blogger.bloggerId} 没有笔记数据需要处理`)
             }
           }
         }
+
+        // 10. 汇总表写入（根据当前笔记表数量更新note_count）
+        console.log('=== 开始写入博主信息汇总表 ===')
+
+        const refreshSummaryExistingRecords = async () => {
+          const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records`
+          const allExistingRecords: any[] = []
+          let hasMore = true
+          let pageToken = ''
+          let pageIndex = 1
+          const maxPages = 50
+          let sameTokenCount = 0
+          const maxSameTokenCount = 3
+
+          while (hasMore && pageIndex <= maxPages) {
+            const url = new URL(recordsUrl)
+            url.searchParams.set('page_size', '1000')
+            if (pageToken) {
+              url.searchParams.set('page_token', pageToken)
+            }
+
+            const response = await fetchWithTimeout(url.toString(), {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+
+            const responseText = await response.text()
+            if (!response.ok) {
+              console.warn(`刷新汇总表记录失败: ${responseText}`)
+              break
+            }
+
+            const responseData = JSON.parse(responseText)
+            if (responseData?.code !== 0 || !responseData?.data) {
+              console.warn(`刷新汇总表记录失败: ${responseData?.msg || '未知错误'}`)
+              break
+            }
+
+            const items = responseData?.data?.items || []
+            allExistingRecords.push(...items)
+
+            hasMore = !!responseData?.data?.has_more
+            const nextPageToken = responseData?.data?.page_token || ''
+
+            if (!hasMore) {
+              break
+            }
+
+            if (pageToken === nextPageToken) {
+              sameTokenCount += 1
+              if (sameTokenCount >= maxSameTokenCount) {
+                console.warn('汇总表pageToken连续未变化，停止翻页')
+                break
+              }
+            } else {
+              sameTokenCount = 0
+            }
+
+            pageToken = nextPageToken
+            pageIndex += 1
+          }
+
+          if (pageIndex > maxPages) {
+            console.warn(`汇总表分页超过 ${maxPages} 页，停止获取`)
+          }
+
+          const refreshedMap = new Map<string, string>()
+          const refreshedFields = new Map<string, any>()
+
+          allExistingRecords.forEach((record) => {
+            const fields = record.fields || {}
+            let bloggerId = ''
+            const rawBloggerId = fields?.blogger_id || fields?.['博主ID']
+            if (rawBloggerId) {
+              if (Array.isArray(rawBloggerId)) {
+                if (rawBloggerId.length > 0 && rawBloggerId[0]?.text) {
+                  bloggerId = rawBloggerId[0].text
+                } else {
+                  bloggerId = String(rawBloggerId)
+                }
+              } else if (typeof rawBloggerId === 'object' && rawBloggerId.text) {
+                bloggerId = rawBloggerId.text
+              } else {
+                bloggerId = String(rawBloggerId)
+              }
+            }
+
+            bloggerId = String(bloggerId || '').trim()
+            if (bloggerId) {
+              refreshedMap.set(bloggerId, record.record_id)
+              refreshedFields.set(bloggerId, fields)
+            }
+          })
+
+          existingBloggerMap = refreshedMap
+          existingBloggerFields = refreshedFields
+          console.log(`刷新后汇总表记录数: ${existingBloggerMap.size}`)
+        }
+
+        await refreshSummaryExistingRecords()
+
+        const fetchNoteTableCount = async (noteTableId: string): Promise<number> => {
+          const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${noteTableId}/records`
+          let totalNotes = 0
+          let hasMore = true
+          let pageToken = ''
+          let pageIndex = 1
+          const maxPages = 50
+          let sameTokenCount = 0
+          const maxSameTokenCount = 3
+
+          while (hasMore && pageIndex <= maxPages) {
+            const url = new URL(recordsUrl)
+            url.searchParams.set('page_size', '1000')
+            if (pageToken) {
+              url.searchParams.set('page_token', pageToken)
+            }
+
+            const response = await fetchWithTimeout(url.toString(), {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+
+            if (!response.ok) {
+              throw new Error(`获取笔记数量失败: ${response.status} ${await response.text()}`)
+            }
+
+            const responseData = JSON.parse(await response.text())
+            if (responseData?.code !== 0 || !responseData?.data) {
+              throw new Error(`获取笔记数量失败: ${responseData?.msg || '未知错误'}`)
+            }
+
+            const items = responseData?.data?.items || []
+            totalNotes += items.length
+
+            hasMore = !!responseData?.data?.has_more
+            const nextPageToken = responseData?.data?.page_token || ''
+
+            if (!hasMore) {
+              break
+            }
+
+            if (pageToken === nextPageToken) {
+              sameTokenCount += 1
+              if (sameTokenCount >= maxSameTokenCount) {
+                console.warn('pageToken连续未变化，停止统计笔记数量')
+                break
+              }
+            } else {
+              sameTokenCount = 0
+            }
+
+            pageToken = nextPageToken
+            pageIndex += 1
+          }
+
+          if (pageIndex > maxPages) {
+            console.warn(`笔记数量分页超过 ${maxPages} 页，停止统计`)
+          }
+
+          return totalNotes
+        }
+
+        const summaryRecords = await Promise.all(bloggerData.map(async (blogger) => {
+          let actualNoteCount = (blogger.noteCount ?? blogger.notes?.length) || 0
+
+          try {
+            const noteTableName = `博主_${blogger.bloggerId}`
+            const existingNoteTable = tablesData.data.items.find((table: any) => table.name === noteTableName)
+            if (existingNoteTable) {
+              const totalNotes = await fetchNoteTableCount(existingNoteTable.table_id)
+              if (totalNotes > 0) {
+                actualNoteCount = totalNotes
+                console.log(`博主 ${blogger.bloggerId} 飞书实际笔记数量: ${totalNotes}`)
+              }
+            }
+          } catch (error) {
+            console.warn(`获取博主 ${blogger.bloggerId} 实际笔记数量失败，使用默认值: ${actualNoteCount}`)
+          }
+
+          return {
+            fields: {
+              '博主ID': blogger.bloggerId,
+              '分享链接': blogger.shareUrl,
+              '用户名': blogger.user?.nickname || '',
+              '头像URL': blogger.user?.avatar || '',
+              '小红书号': blogger.user?.uniqueId || '',
+              '性别': blogger.user?.gender || '',
+              'IP地址': blogger.user?.ipLocation || '',
+              '介绍': blogger.user?.desc || '',
+              '关注数量': blogger.user?.followingCount || 0,
+              '粉丝数量': blogger.user?.followerCount || 0,
+              '作品被赞数量': blogger.user?.likedCount || 0,
+              '作品收藏数量': blogger.user?.collectedCount || 0,
+              '标签': blogger.tags?.join(', ') || blogger.user?.tags?.join(', ') || '',
+              '笔记数量': actualNoteCount,
+              '处理时间': summaryTimestamp
+            }
+          }
+        }))
+
+        console.log(`准备写入 ${summaryRecords.length} 条记录`)
+        console.log('写入数据:', summaryRecords[0])
+
+        // 11. 准备写入数据，使用统一的字段映射表
+        console.log('=== 准备写入数据 ===')
+        const mappedRecords = summaryRecords.map((record, index) => {
+          const mappedFields: any = {}
+          const blogger = record.fields
+
+          console.log(`处理第 ${index + 1} 条记录，原始数据:`, blogger)
+
+          // 使用统一的字段映射表将中文标题转换为API字段名
+          for (const [chineseName, value] of Object.entries(blogger)) {
+            const apiFieldName = fieldNameMapping[chineseName]
+            if (apiFieldName) {
+              if (availableFields.includes(apiFieldName)) {
+                let fieldValue = value
+                if (typeof fieldValue === 'number') {
+                  fieldValue = String(fieldValue)
+                } else if (fieldValue === null || fieldValue === undefined) {
+                  fieldValue = ''
+                }
+
+                mappedFields[apiFieldName] = fieldValue
+                console.log(`字段映射成功: "${chineseName}" -> "${apiFieldName}" = ${fieldValue} (类型: ${typeof fieldValue})`)
+              } else {
+                console.warn(`跳过表格中不存在的字段: "${chineseName}" -> "${apiFieldName}"`)
+              }
+            } else {
+              console.warn(`跳过字段: "${chineseName}" 没有对应的API字段映射`)
+            }
+          }
+
+          if (Object.keys(mappedFields).length === 0) {
+            console.warn(`警告：第 ${index + 1} 条记录没有有效的字段，将跳过该记录`)
+            return null
+          }
+
+          console.log(`映射后的数据:`, mappedFields)
+          return { fields: mappedFields }
+        }).filter((record): record is { fields: any } => record !== null)
+
+        if (mappedRecords.length === 0) {
+          throw new Error('没有可写入的有效数据，请检查表格字段配置')
+        }
+
+        const extractBloggerIdValue = (value: any): string => {
+          if (!value) return ''
+          if (Array.isArray(value)) {
+            if (value.length > 0 && value[0]?.text) {
+              return String(value[0].text).trim()
+            }
+            return String(value).trim()
+          }
+          if (typeof value === 'object' && value.text) {
+            return String(value.text).trim()
+          }
+          return String(value).trim()
+        }
+
+        const isEmptyValue = (value: any): boolean => {
+          if (value === null || value === undefined) return true
+          if (typeof value === 'string') return value.trim() === ''
+          return false
+        }
+
+        const parseNumberValue = (value: any): number | null => {
+          if (value === null || value === undefined || value === '') return null
+          const numericValue = Number(value)
+          return Number.isNaN(numericValue) ? null : numericValue
+        }
+
+        const mergeSummaryFields = (existingFields: any, incomingFields: any): any => {
+          const mergedFields: any = { ...existingFields }
+          const allFieldNames = new Set([...Object.keys(existingFields || {}), ...Object.keys(incomingFields || {})])
+
+          allFieldNames.forEach((fieldName) => {
+            const incomingValue = incomingFields?.[fieldName]
+            const existingValue = existingFields?.[fieldName]
+
+            if (fieldName === 'note_count') {
+              if (!isEmptyValue(incomingValue)) {
+                mergedFields[fieldName] = incomingValue
+              }
+              return
+            }
+
+            const incomingNumber = parseNumberValue(incomingValue)
+            const existingNumber = parseNumberValue(existingValue)
+
+            if (incomingNumber !== null || existingNumber !== null) {
+              if (incomingNumber === null) {
+                mergedFields[fieldName] = existingValue
+              } else if (existingNumber === null) {
+                mergedFields[fieldName] = incomingValue
+              } else {
+                mergedFields[fieldName] = incomingNumber >= existingNumber ? incomingValue : existingValue
+              }
+              return
+            }
+
+            if (!isEmptyValue(incomingValue)) {
+              mergedFields[fieldName] = incomingValue
+              return
+            }
+
+            if (!isEmptyValue(existingValue)) {
+              mergedFields[fieldName] = existingValue
+            }
+          })
+
+          return mergedFields
+        }
+
+        const uniqueMappedRecords: { fields: any }[] = []
+        const seenBloggerIds = new Map<string, { fields: any }>()
+
+        mappedRecords.forEach(record => {
+          const bloggerId = extractBloggerIdValue(record.fields?.blogger_id)
+          if (!bloggerId) {
+            uniqueMappedRecords.push(record)
+            return
+          }
+
+          if (!seenBloggerIds.has(bloggerId)) {
+            seenBloggerIds.set(bloggerId, record)
+          } else {
+            const existingRecord = seenBloggerIds.get(bloggerId)!
+            const existingNoteCount = Number(existingRecord.fields?.note_count ?? 0)
+            const currentNoteCount = Number(record.fields?.note_count ?? 0)
+            const existingFieldCount = Object.keys(existingRecord.fields || {}).length
+            const currentFieldCount = Object.keys(record.fields || {}).length
+
+            if (currentNoteCount > existingNoteCount || currentFieldCount > existingFieldCount) {
+              seenBloggerIds.set(bloggerId, record)
+            }
+          }
+        })
+
+        if (seenBloggerIds.size > 0) {
+          uniqueMappedRecords.push(...seenBloggerIds.values())
+        }
+
+        console.log(`映射后共 ${uniqueMappedRecords.length} 条记录需要处理`)
+        console.log('映射后数据示例:', uniqueMappedRecords[0])
+
+        // 分离更新记录和插入记录
+        console.log('=== 分离更新和插入记录 ===')
+        const updateRecords: any[] = []
+        const insertRecords: any[] = []
+
+        uniqueMappedRecords.forEach((record, index) => {
+          const bloggerId = record.fields.blogger_id
+          if (bloggerId && existingBloggerMap.has(bloggerId)) {
+            const recordId = existingBloggerMap.get(bloggerId)!
+            const existingFields = existingBloggerFields.get(bloggerId)
+            const mergedFields = existingFields ? mergeSummaryFields(existingFields, record.fields) : record.fields
+            updateRecords.push({
+              record_id: recordId,
+              fields: mergedFields
+            })
+            console.log(`记录 ${index + 1} (博主ID: ${bloggerId}) -> 更新 (${recordId})`)
+          } else {
+            insertRecords.push(record)
+            console.log(`记录 ${index + 1} (博主ID: ${bloggerId || '新博主'}) -> 插入`)
+          }
+        })
+
+        console.log(`\n需要更新 ${updateRecords.length} 条记录，需要插入 ${insertRecords.length} 条记录`)
+
+        // 12. 先处理更新记录
+        if (updateRecords.length > 0) {
+          console.log('\n=== 开始处理更新记录 ===')
+          const updateUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/batch_update`
+          console.log('调用批量更新API地址:', updateUrl)
+
+          const updateResponse = await fetch(updateUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              records: updateRecords
+            })
+          })
+
+          const updateResponseText = await updateResponse.text()
+          console.log('批量更新API响应:', updateResponse.status, updateResponse.statusText, updateResponseText)
+
+          if (updateResponse.ok) {
+            const updateResult = JSON.parse(updateResponseText)
+            const updatedRecords = updateResult.data?.records || []
+            totalUpdated = updatedRecords.length || 0
+            if (updateResult.data) {
+              updateResult.data.record_ids = updatedRecords.map((record: any) => record.record_id)
+            }
+            summaryResult.data.record_ids = updatedRecords.map((record: any) => record.record_id)
+            console.log(`✓ 成功更新 ${totalUpdated} 条记录`)
+          } else {
+            console.warn(`更新记录失败，将继续处理插入记录: ${updateResponseText}`)
+          }
+        }
+
+        // 13. 再处理插入记录
+        if (insertRecords.length > 0) {
+          console.log('\n=== 开始处理插入记录 ===')
+          const insertUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${targetTableId}/records/batch_create`
+          console.log('调用批量插入API地址:', insertUrl)
+
+          const insertResponse = await fetch(insertUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              records: insertRecords
+            })
+          })
+
+          const insertResponseText = await insertResponse.text()
+          console.log('批量插入API响应:', insertResponse.status, insertResponse.statusText, insertResponseText)
+
+          if (!insertResponse.ok) {
+            let errorMsg = `插入失败: ${insertResponse.status} ${insertResponse.statusText}`
+            try {
+              const errorData = JSON.parse(insertResponseText)
+              if (errorData?.error?.message) {
+                errorMsg += ` - ${errorData.error.message}`
+              }
+              if (errorData?.code) {
+                errorMsg += ` (错误码: ${errorData.code})`
+              }
+              if (errorData?.code === 91403) {
+                errorMsg += '\n建议：请将应用添加为多维表格协作者并授予读写权限'
+              } else if (errorData?.code === 1254045) {
+                errorMsg += '\n建议：请检查表格字段配置，确保字段名称正确'
+              }
+            } catch (err) {
+              console.warn('解析飞书错误响应失败:', err)
+            }
+            throw new Error(errorMsg)
+          }
+
+          summaryResult = JSON.parse(insertResponseText)
+          const insertedRecords = summaryResult.data?.records || []
+          totalInserted = insertedRecords.length || 0
+          summaryResult.data.record_ids = insertedRecords.map((record: any) => record.record_id)
+          console.log(`✓ 成功插入 ${totalInserted} 条记录`)
+        }
+
+        const totalProcessed = totalUpdated + totalInserted
+        console.log(`\n✓ 飞书表格数据处理完成，共处理 ${totalProcessed} 条记录（更新 ${totalUpdated} 条，插入 ${totalInserted} 条）`)
+        console.log(`✓ 飞书表格数据写入成功，共写入 ${summaryResult.data?.record_ids?.length || 0} 条记录到博主信息汇总表`)
         
         console.log(`\n=== 飞书表格数据写入完成 ===`)
         
         return {
           success: true,
-          data: result.data,
-          message: `成功写入 ${result.data?.record_ids?.length || 0} 条数据到飞书表格，处理了 ${bloggerData.length} 个博主的笔记数据`,
-          backupFilePath: filePath // 返回备份文件路径
+          data: summaryResult.data,
+          message: `成功写入 ${summaryResult.data?.record_ids?.length || 0} 条数据到飞书表格，处理了 ${bloggerData.length} 个博主的笔记数据`
         }
       } catch (error) {
         console.error(`=== 写入飞书表格失败 ===`)
@@ -1669,6 +2389,642 @@ export class FeishuHandler {
       }
     })
 
+    // 清理飞书表格数据 - 对每个博主表格进行去重，保留有content的记录
+    ipcMain.handle('feishu:cleanTableData', async (_, tableUrl: string) => {
+      try {
+        console.log(`=== 开始清理飞书表格数据 ===`)
+        console.log(`表格链接: ${tableUrl}`)
+        
+        // 获取飞书配置
+        const config = this.configManager.getConfig()
+        
+        // 检查配置是否完整
+        if (!config.appId || !config.appSecret) {
+          return {
+            success: false,
+            error: '飞书API配置不完整，请先在设置中配置App ID和App Secret'
+          }
+        }
+        
+        // 解析飞书链接
+        const { docId, type } = this.parseFeishuDocUrl(tableUrl)
+        console.log(`解析结果 - 文档ID: ${docId}, 类型: ${type}`)
+        
+        // 检查是否为飞书多维表格
+        if (type !== 'base') {
+          return {
+            success: false,
+            error: '当前仅支持飞书多维表格清理'
+          }
+        }
+        
+        // 获取访问令牌
+        const accessToken = await this.getCachedAccessToken(config.appId, config.appSecret)
+        
+        // 1. 先调用列出表格API，获取所有表格信息
+        console.log('=== 获取所有表格信息 ===')
+        const tablesUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables`
+        console.log('调用列出表格API地址:', tablesUrl)
+        
+        const tablesResponse = await fetchWithTimeout(tablesUrl, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        })
+        
+        const tablesResponseText = await tablesResponse.text()
+        console.log('列出表格API响应:', tablesResponse.status, tablesResponseText)
+        
+        if (!tablesResponse.ok) {
+          throw new Error(`获取表格列表失败: ${tablesResponse.status} ${tablesResponseText}`)
+        }
+        
+        const tablesData = JSON.parse(tablesResponseText)
+        if (!tablesData?.data?.items || tablesData.data.items.length === 0) {
+          throw new Error('该多维表格下没有找到任何数据表')
+        }
+        
+        const fetchAllRecords = async (tableId: string): Promise<any[]> => {
+          const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${tableId}/records`
+          const allRecords: any[] = []
+          let hasMore = true
+          let pageToken = ''
+          let pageIndex = 1
+          const maxPages = 50
+          let sameTokenCount = 0
+          const maxSameTokenCount = 3
+
+          while (hasMore && pageIndex <= maxPages) {
+            const url = new URL(recordsUrl)
+            url.searchParams.set('page_size', '1000')
+            if (pageToken) {
+              url.searchParams.set('page_token', pageToken)
+            }
+
+            const response = await fetchWithTimeout(url.toString(), {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+
+            if (!response.ok) {
+              throw new Error(`获取记录失败: ${response.status} ${await response.text()}`)
+            }
+
+            const responseData = JSON.parse(await response.text())
+            if (responseData?.code !== 0 || !responseData?.data) {
+              throw new Error(`获取记录失败: ${responseData?.msg || '未知错误'}`)
+            }
+
+            const items = responseData?.data?.items || []
+            allRecords.push(...items)
+
+            hasMore = !!responseData?.data?.has_more
+            const nextPageToken = responseData?.data?.page_token || ''
+
+            if (!hasMore) {
+              break
+            }
+
+            if (pageToken === nextPageToken) {
+              sameTokenCount += 1
+              if (sameTokenCount >= maxSameTokenCount) {
+                console.warn('pageToken连续未变化，停止翻页')
+                break
+              }
+            } else {
+              sameTokenCount = 0
+            }
+
+            pageToken = nextPageToken
+            pageIndex += 1
+          }
+
+          if (pageIndex > maxPages) {
+            console.warn(`分页次数超过 ${maxPages} 页，停止获取`)
+          }
+
+          return allRecords
+        }
+
+        // 2. 确定需要处理的表格：所有博主相关表格（名称以"博主_"开头），以及汇总表
+        const bloggerTables = tablesData.data.items.filter((item: any) => 
+          item.name.startsWith('博主_')
+        )
+
+        const summaryTable = tablesData.data.items[0]
+        
+        console.log(`需要处理的博主表格数量: ${bloggerTables.length}`)
+        console.log(`需要处理的博主表格列表: ${JSON.stringify(bloggerTables.map((item: any) => ({ name: item.name, table_id: item.table_id })))}`)
+        
+        let totalDeduplicated = 0
+        let summaryDeduplicated = 0
+
+        // 2.1 先处理汇总表去重
+        if (summaryTable) {
+          console.log(`\n=== 开始处理汇总表: ${summaryTable.name} (${summaryTable.table_id}) ===`)
+
+          const summaryRecords = await fetchAllRecords(summaryTable.table_id)
+          console.log(`汇总表记录数: ${summaryRecords.length}`)
+
+          if (summaryRecords.length === 0) {
+            console.log('汇总表没有记录，无需处理')
+          } else {
+            const extractBloggerId = (fields: any): string => {
+              const rawBloggerId = fields?.blogger_id || fields?.bloggerId || fields?.['博主ID'] || fields?.['博主id']
+              if (!rawBloggerId) return ''
+              if (Array.isArray(rawBloggerId)) {
+                if (rawBloggerId.length > 0 && rawBloggerId[0]?.text) {
+                  return String(rawBloggerId[0].text).trim()
+                }
+                return String(rawBloggerId).trim()
+              }
+              if (typeof rawBloggerId === 'object' && rawBloggerId.text) {
+                return String(rawBloggerId.text).trim()
+              }
+              return String(rawBloggerId).trim()
+            }
+
+            const isFieldEmpty = (value: any): boolean => {
+              if (value === null || value === undefined) return true
+              if (typeof value === 'string') return value.trim() === ''
+              if (Array.isArray(value)) return value.length === 0
+              if (typeof value === 'object') {
+                if (typeof value.text === 'string') return value.text.trim() === ''
+                if (typeof value.link === 'string') return value.link.trim() === ''
+                return Object.values(value).every(isFieldEmpty)
+              }
+              return false
+            }
+
+            const countNonEmptyFields = (fields: any): number => {
+              if (!fields) return 0
+              return Object.values(fields).reduce((count, value) => {
+                return count + (isFieldEmpty(value) ? 0 : 1)
+              }, 0)
+            }
+
+            const getRecordTime = (record: any): number => {
+              const timeValue = record._modified_time || record._created_time || record.created_time || 0
+              return new Date(timeValue).getTime() || 0
+            }
+
+            const recordsByBloggerId = new Map<string, any[]>()
+            summaryRecords.forEach(record => {
+              const bloggerId = extractBloggerId(record.fields || {})
+              if (!bloggerId) return
+              if (!recordsByBloggerId.has(bloggerId)) {
+                recordsByBloggerId.set(bloggerId, [])
+              }
+              recordsByBloggerId.get(bloggerId)!.push(record)
+            })
+
+            const recordsToDelete: any[] = []
+            recordsByBloggerId.forEach((records, bloggerId) => {
+              if (records.length <= 1) return
+
+              let bestRecord = records[0]
+              let bestScore = countNonEmptyFields(bestRecord.fields || {})
+              let bestTime = getRecordTime(bestRecord)
+
+              records.slice(1).forEach(record => {
+                const score = countNonEmptyFields(record.fields || {})
+                const time = getRecordTime(record)
+                if (score > bestScore || (score === bestScore && time > bestTime)) {
+                  bestRecord = record
+                  bestScore = score
+                  bestTime = time
+                }
+              })
+
+              records.forEach(record => {
+                if (record.record_id !== bestRecord.record_id) {
+                  recordsToDelete.push(record)
+                }
+              })
+            })
+
+            if (recordsToDelete.length > 0) {
+              console.log(`汇总表发现 ${recordsToDelete.length} 条重复记录，准备删除`)
+              const batchSize = 500
+              for (let i = 0; i < recordsToDelete.length; i += batchSize) {
+                const batchRecords = recordsToDelete.slice(i, i + batchSize)
+                const recordIds = batchRecords.map(record => record.record_id)
+                const deleteUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${summaryTable.table_id}/records/batch_delete`
+                const deleteResponse = await fetchWithTimeout(deleteUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    records: recordIds
+                  })
+                })
+
+                const deleteResponseText = await deleteResponse.text()
+                console.log(`汇总表删除记录API响应: ${deleteResponse.status} ${deleteResponseText}`)
+
+                if (!deleteResponse.ok) {
+                  throw new Error(`删除汇总表重复记录失败: ${deleteResponse.status} ${deleteResponseText}`)
+                }
+
+                const deleteResult = JSON.parse(deleteResponseText)
+                const deletedCount = (deleteResult.data?.records || []).filter((r: any) => r.deleted === true).length || 0
+                summaryDeduplicated += deletedCount
+              }
+              console.log(`✓ 汇总表去重完成，共删除 ${summaryDeduplicated} 条重复记录`)
+            } else {
+              console.log('汇总表没有重复记录，无需删除')
+            }
+          }
+        } else {
+          console.log('未找到汇总表，跳过汇总表清理')
+        }
+        
+        // 3. 遍历所有博主表格，依次进行去重处理
+        for (const table of bloggerTables) {
+          console.log(`\n=== 开始处理表格: ${table.name} (${table.table_id}) ===`)
+          
+          // 首先获取该表格的所有记录
+          const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${table.table_id}/records`
+          const allRecords: any[] = []
+          
+          let hasMore = true
+          let pageToken = ''
+          let pageIndex = 1
+          const maxPages = 50 // 设置最大页数限制，避免无限循环
+          
+          // 处理分页，确保获取到所有有效记录
+          let sameTokenCount = 0 // 统计连续相同pageToken的次数
+          const maxSameTokenCount = 5 // 允许连续相同pageToken的最大次数，增加到5次
+          
+          while (hasMore && pageIndex <= maxPages) {
+            const url = new URL(recordsUrl)
+            url.searchParams.set('page_size', '1000')
+            if (pageToken) {
+              url.searchParams.set('page_token', pageToken)
+            }
+
+            const listResponse = await fetchWithTimeout(url.toString(), {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+            
+            if (!listResponse.ok) {
+              throw new Error(`获取记录失败: ${listResponse.status} ${await listResponse.text()}`)
+            }
+            
+            const listResult = JSON.parse(await listResponse.text())
+            if (listResult?.code !== 0 || !listResult?.data) {
+              throw new Error(`获取记录失败: ${listResult?.msg || '未知错误'}`)
+            }
+            const existingRecords = listResult?.data?.items || []
+            
+            console.log(`第 ${pageIndex} 页API响应: has_more=${listResult?.data?.has_more}, page_token=${listResult?.data?.page_token}`)
+            
+            // 检查当前页是否有记录
+            if (existingRecords.length === 0) {
+              console.log(`第 ${pageIndex} 页获取到 0 条记录，停止翻页`)
+              break
+            }
+            
+            // 提取note_id的辅助函数
+            const extractNoteId = (fields: any): string => {
+              const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id'] || fields?.['笔记ID']
+              if (!rawNoteId) return ''
+              if (Array.isArray(rawNoteId)) {
+                if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
+                  return String(rawNoteId[0].text).trim()
+                }
+                return String(rawNoteId).trim()
+              }
+              if (typeof rawNoteId === 'object' && rawNoteId.text) {
+                return String(rawNoteId.text).trim()
+              }
+              return String(rawNoteId).trim()
+            }
+            
+            // 检查当前页记录是否有有效的note_id
+            const hasValidNoteId = existingRecords.some(record => {
+              const noteId = extractNoteId(record.fields || {})
+              return noteId.length > 0
+            })
+            
+            if (!hasValidNoteId) {
+              console.log(`第 ${pageIndex} 页记录中没有有效的note_id，提前结束分页`)
+              break
+            }
+            
+            // 添加记录到allRecords
+            allRecords.push(...existingRecords)
+            
+            console.log(`第 ${pageIndex} 页获取到 ${existingRecords.length} 条记录，累计获取 ${allRecords.length} 条`)
+            
+            // 更新分页参数，以has_more为准
+            hasMore = !!listResult?.data?.has_more
+            const nextPageToken = listResult?.data?.page_token || ''
+            
+            // 如果没有更多数据，停止翻页
+            if (!hasMore) {
+              console.log(`API返回has_more=false，停止翻页`)
+              break
+            }
+            
+            // 处理相同pageToken的情况
+            if (pageToken === nextPageToken) {
+              sameTokenCount++
+              console.log(`pageToken没有变化，连续次数: ${sameTokenCount}/${maxSameTokenCount}`)
+              
+              // 继续翻页，增加相同pageToken的容忍次数
+              if (sameTokenCount >= maxSameTokenCount) {
+                console.log(`连续相同pageToken次数超过限制，停止翻页`)
+                break
+              }
+              
+              // 继续翻页，但使用相同的pageToken
+              pageIndex++
+              // 添加延迟，避免过快请求API
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              continue
+            } else {
+              // 重置连续相同pageToken计数
+              sameTokenCount = 0
+            }
+            
+            pageToken = nextPageToken
+            pageIndex++
+          }
+          
+          if (pageIndex > maxPages) {
+            console.log(`已达到最大页数限制(${maxPages}页)，停止翻页`)
+          }
+          
+          console.log(`共获取到 ${allRecords.length} 条记录`)
+          
+          // 如果没有记录，跳过处理
+          if (allRecords.length === 0) {
+            console.log(`✓ 表格中没有记录，无需处理`)
+            continue
+          }
+          
+          // 4. 对当前表格数据进行去重，根据note_id
+          console.log(`=== 开始对表格 ${table.name} 进行去重 ===`)
+          
+          // 提取note_id的辅助函数
+          const extractNoteId = (fields: any): string => {
+            const rawNoteId = fields?.note_id || fields?.node_id || fields?.['note_id'] || fields?.['node_id'] || fields?.['笔记ID'] || fields?.['noteId'] || fields?.['Note ID']
+            if (!rawNoteId) return ''
+            if (Array.isArray(rawNoteId)) {
+              if (rawNoteId.length > 0 && rawNoteId[0]?.text) {
+                return String(rawNoteId[0].text).trim()
+              }
+              return String(rawNoteId).trim()
+            }
+            if (typeof rawNoteId === 'object' && rawNoteId.text) {
+              return String(rawNoteId.text).trim()
+            }
+            return String(rawNoteId).trim()
+          }
+          
+          // 提取content的辅助函数
+          const extractContent = (fields: any): string => {
+            const rawContent = fields?.content || fields?.['内容'] || fields?.['contentText'] || ''
+            return String(rawContent || '').trim()
+          }
+          
+          // 第一步：收集所有带有note_id的记录
+          const recordsWithNoteId = allRecords.filter(record => {
+            const noteId = extractNoteId(record.fields || {})
+            return noteId.length > 0
+          })
+          
+          console.log(`原始记录数: ${allRecords.length}`)
+          console.log(`带有note_id的记录数: ${recordsWithNoteId.length}`)
+          
+          // 第二步：按note_id分组所有记录
+          const recordsByNoteId = new Map<string, any[]>()
+          
+          recordsWithNoteId.forEach((record) => {
+            const noteId = extractNoteId(record.fields || {})
+            if (!noteId) return // 跳过没有note_id的记录
+            
+            if (!recordsByNoteId.has(noteId)) {
+              recordsByNoteId.set(noteId, [])
+            }
+            recordsByNoteId.get(noteId)?.push(record)
+          })
+          
+          console.log(`按note_id分组后，共有 ${recordsByNoteId.size} 个唯一note_id`)
+          
+          // 第三步：为每个note_id选择要保留的记录
+          const recordsToKeep: any[] = []
+          
+          recordsByNoteId.forEach((records, noteId) => {
+            if (records.length === 0) return
+            
+            // 如果只有一条记录，直接保留
+            if (records.length === 1) {
+              recordsToKeep.push(records[0])
+              console.log(`note_id=${noteId} 只有一条记录，直接保留`)
+              return
+            }
+            
+            // 获取记录创建时间的辅助函数
+            const getCreatedTime = (record: any): Date => {
+              // 尝试从不同位置获取创建时间
+              const createdTime = record.created_time || 
+                                 record._created_time || 
+                                 record.fields?._created_time || 
+                                 record.fields?.['_created_time'] || 
+                                 '1970-01-01'
+              return new Date(createdTime)
+            }
+            
+            // 1. 先按是否有content分组
+            const recordsWithContent = records.filter((record: any) => {
+              const content = extractContent(record.fields || {})
+              return content.length > 0
+            })
+            
+            const recordsWithoutContent = records.filter((record: any) => {
+              const content = extractContent(record.fields || {})
+              return content.length === 0
+            })
+            
+            console.log(`note_id=${noteId} 有 ${records.length} 条记录，其中有content: ${recordsWithContent.length} 条，无content: ${recordsWithoutContent.length} 条`)
+            
+            let recordToKeep: any
+            
+            if (recordsWithContent.length > 0) {
+              // 2. 如果有带content的记录，从中选择创建时间最晚的
+              recordToKeep = recordsWithContent.reduce((latest, current) => {
+                const latestTime = getCreatedTime(latest)
+                const currentTime = getCreatedTime(current)
+                return currentTime > latestTime ? current : latest
+              })
+            } else {
+              // 3. 如果没有带content的记录，从无content的记录中选择创建时间最晚的
+              recordToKeep = recordsWithoutContent.reduce((latest, current) => {
+                const latestTime = getCreatedTime(latest)
+                const currentTime = getCreatedTime(current)
+                return currentTime > latestTime ? current : latest
+              })
+            }
+            
+            // 4. 记录要保留的记录
+            recordsToKeep.push(recordToKeep)
+            
+            const recordToKeepTime = getCreatedTime(recordToKeep)
+            console.log(`note_id=${noteId} 保留的记录: record_id=${recordToKeep.record_id}, created_time=${recordToKeepTime.toISOString()}`)
+          })
+          
+          // 第四步：收集所有需要保留的记录ID
+          const keepRecordIds = new Set<string>()
+          recordsToKeep.forEach(record => {
+            keepRecordIds.add(record.record_id)
+          })
+          
+          // 第五步：调试信息 - 检查前10条记录的note_id和record_id
+          console.log(`=== 调试信息 - 前10条记录 ===`)
+          recordsWithNoteId.slice(0, 10).forEach((record, index) => {
+            const noteId = extractNoteId(record.fields || {})
+            const recordId = record.record_id
+            const isKept = keepRecordIds.has(recordId)
+            console.log(`${index + 1}. note_id=${noteId}, record_id=${recordId}, kept=${isKept}`)
+          })
+          
+          // 第六步：找出所有需要删除的记录
+          // 只删除带有note_id的重复记录，保留每个note_id的一条记录
+          const recordsToDelete: any[] = []
+          const deletedNoteIds = new Set<string>()
+          
+          // 只处理带有note_id的记录，避免删除没有note_id的记录
+          recordsWithNoteId.forEach(record => {
+            const recordId = record.record_id
+            const noteId = extractNoteId(record.fields || {})
+            
+            if (!keepRecordIds.has(recordId)) {
+              recordsToDelete.push(record)
+              deletedNoteIds.add(noteId)
+            }
+          })
+          
+          console.log(`=== 去重统计 ===`)
+          console.log(`原始记录数: ${allRecords.length}`)
+          console.log(`带有note_id的记录数: ${recordsWithNoteId.length}`)
+          console.log(`唯一note_id数量: ${recordsByNoteId.size}`)
+          console.log(`需要保留的记录数: ${recordsToKeep.length}`)
+          console.log(`需要删除的重复记录数: ${recordsToDelete.length}`)
+          console.log(`被删除的note_id数量: ${deletedNoteIds.size}`)
+          
+          // 安全检查：确保我们不会删除所有记录
+          const expectedKeptRecords = recordsByNoteId.size
+          const expectedDeletedRecords = recordsWithNoteId.length - expectedKeptRecords
+          
+          console.log(`=== 安全检查 ===`)
+          console.log(`预期保留记录数: ${expectedKeptRecords}`)
+          console.log(`预期删除记录数: ${expectedDeletedRecords}`)
+          
+          // 如果没有重复记录，跳过删除
+          if (recordsToDelete.length === 0) {
+            console.log(`✓ 表格中没有重复记录，无需删除`)
+            continue
+          }
+          
+          // 安全检查：确保删除的记录数符合预期
+          if (recordsToDelete.length > expectedDeletedRecords + 50) {
+            console.warn(`⚠️  删除记录数(${recordsToDelete.length})超过预期(${expectedDeletedRecords})，可能存在逻辑错误，跳过删除`)
+            continue
+          }
+          
+          // 安全检查：确保保留的记录数大于0
+          if (recordsToKeep.length === 0) {
+            console.warn(`⚠️  没有要保留的记录，可能存在逻辑错误，跳过删除`)
+            continue
+          }
+          
+          // 安全检查：确保保留的记录数等于唯一note_id数量
+          if (Math.abs(recordsToKeep.length - expectedKeptRecords) > 10) {
+            console.warn(`⚠️  保留记录数(${recordsToKeep.length})与预期(${expectedKeptRecords})不符，可能存在逻辑错误，跳过删除`)
+            continue
+          }
+          
+          // 最终确认
+          console.log(`=== 最终确认 ===`)
+          console.log(`准备删除 ${recordsToDelete.length} 条重复记录`)
+          console.log(`准备保留 ${recordsToKeep.length} 条记录`)
+          console.log(`每条note_id将保留一条记录`)
+          
+          // 5. 分批删除重复记录，每批最多500条
+          const batchSize = 500
+          let tableDeduplicated = 0
+          
+          for (let i = 0; i < recordsToDelete.length; i += batchSize) {
+            const batchRecords = recordsToDelete.slice(i, i + batchSize)
+            const batchRecordIds = batchRecords.map(record => record.record_id)
+            console.log(`删除第 ${Math.floor(i / batchSize) + 1} 批重复记录，共 ${batchRecordIds.length} 条`)
+            
+            const deleteUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${docId}/tables/${table.table_id}/records/batch_delete`
+            const deleteResponse = await fetchWithTimeout(deleteUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                records: batchRecordIds
+              })
+            })
+            
+            const deleteResponseText = await deleteResponse.text()
+            console.log(`删除记录API响应: ${deleteResponse.status} ${deleteResponseText}`)
+            
+            if (!deleteResponse.ok) {
+              throw new Error(`删除重复记录失败: ${deleteResponse.status} ${deleteResponseText}`)
+            }
+            
+            const deleteResult = JSON.parse(deleteResponseText)
+            console.log(`删除结果详细信息: ${JSON.stringify(deleteResult)}`)
+            // 飞书API返回的是records数组，需要统计删除成功的数量
+            const records = deleteResult.data?.records || []
+            console.log(`删除结果中的records数组: ${JSON.stringify(records)}`)
+            const deletedCount = records.filter((r: any) => r.deleted === true).length || 0
+            console.log(`统计到的删除成功数量: ${deletedCount}`)
+            tableDeduplicated += deletedCount
+            totalDeduplicated += deletedCount
+            console.log(`✓ 成功删除第 ${Math.floor(i / batchSize) + 1} 批重复记录，共 ${deletedCount} 条`)
+          }
+          
+          console.log(`✓ 表格 ${table.name} 去重完成，共删除 ${tableDeduplicated} 条重复记录`)
+        }
+        
+        console.log(`\n=== 飞书表格数据清理完成 ===`)
+        console.log(`✓ 共处理 ${bloggerTables.length} 个博主表格，累计删除 ${totalDeduplicated} 条重复记录`)
+        if (summaryTable) {
+          console.log(`✓ 汇总表累计删除 ${summaryDeduplicated} 条重复记录`)
+        }
+        
+        return {
+          success: true,
+          message: `成功处理 ${bloggerTables.length} 个博主表格，共删除 ${totalDeduplicated} 条重复记录`
+        }
+      } catch (error) {
+        console.error(`=== 清理飞书表格数据失败 ===`)
+        console.error('错误详情:', error)
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : '清理飞书表格数据失败'
+        }
+      }
+    })
+    
     // 从Excel汇总表中解析博主数据，包括每个博主的详细笔记数据
     ipcMain.handle('feishu:loadExcelSummary', async (_, filePath: string) => {
       try {
@@ -1823,7 +3179,8 @@ export class FeishuHandler {
               author_name: note['作者名称'] || '',
               author_avatar: note['作者头像'] || '',
               ip_location: note['IP归属地'] || '',
-              crawl_time: note['爬取时间'] || ''
+              crawl_time: note['爬取时间'] || '',
+              crawl_status: note['爬取状态'] || ''
             }
           })
           
@@ -2106,30 +3463,77 @@ export class FeishuHandler {
       
       const tableId = await this.resolveBitableTableId(accessToken, appToken, sheetId)
       
-      // 使用用户要求的接口：/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/search
-      const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records/search`
+      const recordsUrl = `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`
       console.log('调用的API地址:', recordsUrl)
       
-      // bitable search接口需要POST请求
-      const response = await fetch(recordsUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          page_size: 100
+      const allItems: any[] = []
+      let hasMore = true
+      let pageToken = ''
+      let pageIndex = 1
+      const maxPages = 50
+      let sameTokenCount = 0
+      const maxSameTokenCount = 3
+      
+      while (hasMore && pageIndex <= maxPages) {
+        const url = new URL(recordsUrl)
+        url.searchParams.set('page_size', '1000')
+        if (pageToken) {
+          url.searchParams.set('page_token', pageToken)
+        }
+        
+        const response = await fetchWithTimeout(url.toString(), {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
         })
-      })
-      
-      const responseText = await response.text()
-      console.log('飞书Bitable API响应:', response.status, response.statusText, responseText)
-      
-      if (!response.ok) {
-        throw new Error(`读取多维表格数据失败: ${response.status} ${response.statusText} - ${responseText}`)
+        
+        const responseText = await response.text()
+        console.log(`飞书Bitable API响应(第 ${pageIndex} 页):`, response.status, response.statusText, responseText)
+        
+        if (!response.ok) {
+          throw new Error(`读取多维表格数据失败: ${response.status} ${response.statusText} - ${responseText}`)
+        }
+        
+        const responseData = JSON.parse(responseText)
+        if (responseData?.code !== 0 || !responseData?.data) {
+          throw new Error(`读取多维表格数据失败: ${responseData?.msg || '未知错误'}`)
+        }
+        
+        const items = responseData?.data?.items || []
+        allItems.push(...items)
+        
+        hasMore = !!responseData?.data?.has_more
+        const nextPageToken = responseData?.data?.page_token || ''
+        
+        if (!hasMore) {
+          break
+        }
+        
+        if (pageToken === nextPageToken) {
+          sameTokenCount += 1
+          if (sameTokenCount >= maxSameTokenCount) {
+            console.warn('pageToken连续未变化，停止翻页')
+            break
+          }
+        } else {
+          sameTokenCount = 0
+        }
+        
+        pageToken = nextPageToken
+        pageIndex += 1
       }
       
-      return JSON.parse(responseText)
+      if (pageIndex > maxPages) {
+        console.warn(`分页次数超过 ${maxPages} 页，停止获取`) 
+      }
+      
+      return {
+        data: {
+          items: allItems
+        }
+      }
     } else {
       // 飞书文档表格API
       console.log('使用飞书文档表格API')

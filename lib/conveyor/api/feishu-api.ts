@@ -83,4 +83,11 @@ export class FeishuApi {
   readSummaryInfo = async (tableUrl: string): Promise<{ success: boolean; data?: Array<{ bloggerId: string; noteCount: number }>; error?: string }> => {
     return await this.api.ipcRenderer.invoke('feishu:readSummaryInfo', tableUrl)
   }
+
+  /**
+   * 清理飞书表格数据
+   */
+  cleanTableData = async (tableUrl: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    return await this.api.ipcRenderer.invoke('feishu:cleanTableData', tableUrl)
+  }
 }
