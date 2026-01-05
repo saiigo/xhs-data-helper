@@ -7,3 +7,7 @@ temp
 tsconfig.node.tsbuildinfo
 tsconfig.web.tsbuildinfo
 .python-version
+
+venv
+tmp-config
+tmp-logs

@@ -1,4 +1,4 @@
 [submodule "python-engine"]
 	path = python-engine
-	url = https://github.com/PeanutSplash/Spider_XHS.git
+	url = https://github.com/saiigo/Spider_XHS.git
 	branch = master
