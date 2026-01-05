@@ -1,60 +1,130 @@
 <div align="center">
 
-<h1>小红书数据助手</h1>
+# 小红书数据助手
 
-**批量下载笔记内容的桌面工具**
+**批量采集小红书博主笔记数据并同步到飞书表格的桌面工具**
 
 <img src="docs/assets/preview.png" alt="软件界面预览" width="800">
 
-图片 • 视频 • Excel 数据 • 本地运行
+飞书集成 • 批量采集 • Excel 导出 • 本地运行
 
-[![Windows](https://img.shields.io/badge/Windows-支持-0078D6?logo=windows&logoColor=white)](https://github.com/PeanutSplash/xhs-data-helper/releases)
-[![macOS](https://img.shields.io/badge/macOS-支持-000000?logo=apple&logoColor=white)](https://github.com/PeanutSplash/xhs-data-helper/releases)
-[![License](https://img.shields.io/badge/License-CC_BY--NC_4.0-green)](LICENSE)
-
-[下载](#安装) • [使用说明](#使用说明) • [常见问题](#常见问题)
+[开发指南](#开发指南) • [使用说明](#使用说明) 
 
 </div>
 
 ---
 
-## 功能
+## 功能特性
 
-### 三种下载模式
+### 核心工作流程
 
-| 模式 | 适用场景 |
-|------|---------|
-| **指定笔记** | 你已经有一批笔记链接,想批量保存 |
-| **博主笔记** | 喜欢某个博主,想下载 TA 的所有内容 |
-| **搜索下载** | 按关键词搜索,批量保存搜索结果 |
+| 步骤 | 操作 | 说明 |
+|------|------|------|
+| 1 | 配置飞书 API | 在设置页面填写 App ID 和 App Secret |
+| 2 | 读取博主数据 | 从飞书多维表格读取博主 ID 和主页链接 |
+| 3 | 批量采集 | 自动采集每个博主的笔记列表和详情信息 |
+| 4 | 数据输出 | 生成 Excel 表格并同步回飞书表格 |
 
 ### 主要特点
 
-- 完整保存笔记中的图片和视频
-- 自动生成 Excel 表格(包含标题、正文、点赞数等)
-- Cookie 本地加密,不上传任何数据
-- 支持断点续传和任务队列
-- 支持 HTTP/HTTPS 代理
+- 从飞书表格批量读取博主信息
+- 自动采集博主笔记列表和详情数据
+- 生成带有多 Sheet 的 Excel 文件（每个博主一个 Sheet）
+- 支持增量写入飞书多维表格
+- 支持本地 Cookie 认证和代理配置
+- 可配置 API 请求间隔，避免触发反爬机制
+- 支持亮色/暗色主题切换
+
+### 数据存储模式
+
+| 模式 | 说明 |
+|------|------|
+| **飞书模式** | 数据读取和写入均通过飞书 API |
+| **下载模式** | 数据保存到本地文件系统 |
 
 ---
 
-## 安装
+---
 
-从 [Releases](https://github.com/PeanutSplash/xhs-data-helper/releases) 下载对应系统的安装包:
+## 技术栈
 
-- **Windows**: `xhs-helper-setup.exe`
-- **macOS**: `xhs-helper.dmg`
-
-> macOS 用户首次打开时,需要在「系统偏好设置 → 安全性与隐私」中点击"仍要打开"
+- **前端**: React 19 + TypeScript + Tailwind CSS
+- **UI 组件**: Radix UI + Lucide 图标
+- **桌面框架**: Electron 37
+- **爬虫引擎**: Python 3
+- **状态管理**: React Hooks + Context
+- **动画**: Framer Motion
 
 ---
+
+## 开发指南
+
+### 环境要求
+
+- Node.js 18+
+- pnpm 9+
+- Python 3.8+
+- macOS / Windows / Linux
+
+### 本地开发
+
+```bash
+# 克隆项目
+git clone https://github.com/saiigo/xhs-data-helper.git
+cd xhs-data-helper
+
+# 安装依赖
+pnpm install
+
+# 安装 Python 依赖
+pip3 install -r python-engine/requirements.txt
+
+# 启动开发服务器
+pnpm run dev
+```
+
+### 构建发布包
+
+```bash
+# 构建 Windows 版本
+pnpm run build:win
+
+# 构建 macOS 版本
+pnpm run build:mac
+```
+
+---
+
 
 ## 使用说明
 
-### 1. 获取 Cookie
+### 1. 配置飞书 API
 
 <details>
 <summary>点击查看步骤</summary>
+
+1. 访问 [飞书开放平台](https://open.feishu.cn),登录你的飞书账号
+2. 创建企业自建应用,获取 **App ID** 和 **App Secret**
+3. 为应用添加以下权限:
+   - 文档阅读
+   - 多维表格读取
+   - 多维表格写入
+4. 在软件的设置页面填写 App ID 和 App Secret
+
+</details>
+
+### 2. 配置小红书 Cookie
+
+<details>
+<summary>点击查看步骤</summary>
+
+**方式一: 浏览器一键登录**
+
+1. 在设置页面点击「一键登录」
+2. 在弹出的浏览器窗口中登录小红书
+3. 登录成功后自动获取并保存 Cookie
+
+**方式二: 手动获取 Cookie**
 
 1. 用浏览器打开 [小红书网页版](https://www.xiaohongshu.com),登录你的账号
 2. 按 <kbd>F12</kbd> 打开开发者工具
@@ -65,138 +135,81 @@
 
 </details>
 
-### 2. 配置保存路径
+### 3. 准备飞书表格
 
-在设置页面指定:
-- 图片/视频保存位置
-- Excel 文件保存位置
-- 代理地址(可选)
+创建飞书多维表格,包含以下两列:
 
-### 3. 创建任务
+| 列名 | 说明 |
+|------|------|
+| 博主 ID | 小红书博主 ID |
+| 博主主页链接 | 博主主页的分享链接 |
 
-**指定笔记模式**
-```
-https://www.xiaohongshu.com/explore/xxxxx
-https://www.xiaohongshu.com/explore/yyyyy
-```
-每行一个链接
+### 4. 开始采集
 
-**博主笔记模式**
-```
-https://www.xiaohongshu.com/user/profile/xxxxx
-```
-输入博主主页链接
-
-**搜索模式**
-
-填写搜索关键词和筛选条件:
-- 下载数量
-- 排序方式(综合/最新/最热)
-- 笔记类型(图文/视频/不限)
-- 时间范围
-
-### 4. 查看进度
-
-在历史页面可以:
-- 查看实时日志和进度条
-- 随时停止任务
-- 导出日志文件
-- 打开结果文件夹
+1. 在飞书集成页面填写飞书表格链接
+2. 点击「读取数据」,确认读取到博主列表
+3. 点击「开始工作」,系统将:
+   - 依次读取每个博主的笔记列表
+   - 获取笔记详情信息
+   - 生成 Excel 文件
+   - 可选写入飞书多维表格
 
 ---
 
-## 常见问题
+## 高级配置
 
-<details>
-<summary><b>文件保存在哪里?</b></summary>
+### API 请求间隔
 
-在设置页面可以看到你配置的路径,或者在历史页面点击"打开文件夹"按钮。
+为避免触发小红书的反爬机制,可配置请求间隔:
 
-文件结构:
-```
-保存路径/
-├── 笔记标题1/
-│   ├── 图1.jpg
-│   ├── 图2.jpg
-│   └── 视频.mp4
-├── 笔记标题2/
-└── 汇总.xlsx
-```
+- **最小间隔**: 1-60 秒
+- **最大间隔**: 1-60 秒
 
-</details>
+系统会在每次请求时随机选择间隔时间。
 
-<details>
-<summary><b>macOS 提示"无法打开"</b></summary>
+### 代理配置
 
-解决方法:
-1. 打开「系统偏好设置 → 安全性与隐私」
-2. 点击"仍要打开"
+如需使用代理,可在设置页面配置:
 
-或者在终端执行:
-```bash
-sudo xattr -r -d com.apple.quarantine /Applications/xhs-helper.app
-```
-
-</details>
+- 启用/禁用代理
+- 填写代理地址 (支持 HTTP/HTTPS)
 
 ---
 
-## 核心依赖
+## 项目结构
 
-本项目的爬虫能力基于 [Spider_XHS](https://github.com/cv-cat/Spider_XHS) 实现
+```
+xhs-data-helper/
+├── app/                    # Electron 主进程和渲染进程代码
+│   ├── components/         # UI 组件
+│   ├── pages/             # 页面组件
+│   │   ├── DownloadPage.tsx
+│   │   ├── FeishuPage.tsx
+│   │   ├── HistoryPage.tsx
+│   │   └── SettingsPage.tsx
+│   └── styles/            # 样式文件
+├── lib/                    # 业务逻辑层
+│   ├── conveyor/          # 进程通信层
+│   ├── main/              # 主进程逻辑
+│   │   ├── feishu/        # 飞书 API 处理
+│   │   └── spider/        # 爬虫逻辑
+│   └── preload/           # 预加载脚本
+├── python-engine/         # Spider_XHS 爬虫引擎
+```
 
----
+
+
+## TODO
+- [ ] 同步bug修复
 
 ## 许可证
 
-本项目基于 [CC BY-NC 4.0](LICENSE) 开源
+本项目基于 [MIT License](LICENSE) 开源
 
 ---
 
-## 反馈
+## 免责声明
 
-- [报告问题](https://github.com/PeanutSplash/xhs-data-helper/issues)
-- 觉得有用的话,给个 Star ⭐
-
----
-
-<div align="center">
-
-**免责声明**
-
-本工具仅供学习研究使用,请遵守相关法律法规和平台规则。<br>
-下载内容的版权归原作者所有,使用后果自负。
-
-<br>
-
-[下载最新版本](https://github.com/PeanutSplash/xhs-data-helper/releases)
+本工具仅供学习研究使用,请遵守相关法律法规和平台规则。采集内容的版权归原作者所有,使用后果自负。
 
 </div>
-
----
-
-<details>
-<summary><b>开发者</b></summary>
-
-### 技术栈
-- React 19 + TypeScript + Tailwind CSS
-- Electron 37
-
-### 本地开发
-```bash
-git clone --recursive https://github.com/PeanutSplash/xhs-data-helper.git
-cd xhs-data-helper
-
-pnpm install
-pip3 install -r python-engine/requirements.txt
-
-pnpm run dev
-```
-
-### 构建
-```bash
-pnpm run build:win    # Windows
-pnpm run build:mac    # macOS
-```
-
-</details>
